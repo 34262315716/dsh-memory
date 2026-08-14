@@ -35,9 +35,14 @@ const FEATURE_FIELDS = [
 /** 提取模型字段（refiner 子对象）。 */
 const REFINER_FIELDS = [
   ['enabled', '启用 LLM 提取', '用独立模型蒸馏记忆，替代原始文本入库'],
-  ['provider', 'Provider', '如 opencode-go / deepseek-official'],
-  ['model', '模型', '如 deepseek-v4-flash / deepseek-v4-pro'],
+  ['provider', '供应商 Provider', '已注册的 provider 路由（opencode-go / deepseek-official / 自建）'],
+  ['model', '模型', '如 deepseek-v4-flash / deepseek-v4-pro / mimo-v2.5'],
+  ['apiKeyEnv', '密钥引用名', '凭据文件中的键名（默认 MEMORY_REFINER_API_KEY），自建供应商时与模型设置的 apiKeyEnv 保持一致'],
 ]
+
+/** 常用模型建议。 */
+const MODEL_SUGGESTIONS = ['deepseek-v4-flash', 'deepseek-v4-pro', 'mimo-v2.5']
+const PROVIDER_SUGGESTIONS = ['opencode-go', 'deepseek-official', 'memory-refiner', 'deepseek']
 
 function Field({ label, hint, children }) {
   return (
@@ -67,7 +72,7 @@ function CheckboxRow({ label, hint, checked, onChange }) {
 
 /** 设置卡片主组件。 */
 function MemorySettingsCard(props) {
-  const { scope } = props
+  const { scope, api } = props
   const [snap, setSnap] = useState(() => scope.getSnapshot())
   useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope])
 
@@ -75,11 +80,49 @@ function MemorySettingsCard(props) {
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
+  // 独立密钥状态：只报告"已配置/未配置"，绝不含密钥本身
+  const [keyState, setKeyState] = useState({ ref: '', configured: false, checking: false, writing: false })
+  const [keyDraft, setKeyDraft] = useState('')
+
   const value = snap.value ?? {}
   const features = value.features ?? {}
   const refiner = value.refiner ?? {}
   const writable = snap.writable ?? false
   const status = snap.status
+
+  const keyRef = () => {
+    const d = drafts['refiner.apiKeyEnv']
+    return (d !== undefined && d !== '' ? d : refiner.apiKeyEnv) || 'MEMORY_REFINER_API_KEY'
+  }
+
+  const checkKey = async () => {
+    const ref = keyRef()
+    setKeyState((s) => ({ ...s, ref, checking: true }))
+    try {
+      const response = await api.credentials.describe({ refs: [ref] })
+      const configured = Boolean(response?.result?.ok && response.result.value?.credentials?.[ref]?.configured)
+      setKeyState((s) => ({ ...s, configured, checking: false }))
+    } catch {
+      setKeyState((s) => ({ ...s, checking: false }))
+    }
+  }
+  useEffect(() => { void checkKey() }, [drafts['refiner.apiKeyEnv'], refiner.apiKeyEnv])
+
+  const saveKey = async () => {
+    if (!keyDraft) return
+    const ref = keyRef()
+    setKeyState((s) => ({ ...s, writing: true }))
+    try {
+      await api.credentials.set({ ref, value: keyDraft })
+      setKeyDraft('')
+      setMsg(`✅ 密钥已保存到凭据文件（${ref}，不回显不落 settings）`)
+      await checkKey()
+    } catch (err) {
+      setMsg(`❌ 密钥保存失败: ${err.message}`)
+    } finally {
+      setKeyState((s) => ({ ...s, writing: false }))
+    }
+  }
 
   const num = (field) => {
     const raw = drafts[field]
@@ -120,7 +163,7 @@ function MemorySettingsCard(props) {
         }
         await scope.set('features', next)
       }
-      // refiner 整体
+      {/* refiner 整体 */}
       const refKeys = REFINER_FIELDS.map(([f]) => f)
       if (refKeys.some((f) => drafts[`refiner.${f}`] !== undefined)) {
         const next = { ...refiner }
@@ -182,24 +225,75 @@ function MemorySettingsCard(props) {
         checked={bool('refiner', 'enabled', refiner)}
         onChange={(e) => setBool('refiner', 'enabled', e.target.checked)}
       />
-      <Field label="Provider" hint="如 opencode-go / deepseek-official">
+      <Field label="供应商 Provider" hint="opencode-go / deepseek-official / 自建独立供应商">
         <input
           style={inputStyle}
           type="text"
+          list="dsh-memory-providers"
           value={drafts['refiner.provider'] ?? refiner.provider ?? ''}
           disabled={!writable}
           onChange={(e) => setText('refiner', 'provider', e.target.value)}
         />
+        <datalist id="dsh-memory-providers">
+          {PROVIDER_SUGGESTIONS.map((p) => <option key={p} value={p} />)}
+        </datalist>
       </Field>
-      <Field label="模型" hint="如 deepseek-v4-flash / deepseek-v4-pro">
+      <Field label="模型" hint="deepseek-v4-flash / deepseek-v4-pro / mimo-v2.5">
         <input
           style={inputStyle}
           type="text"
+          list="dsh-memory-models"
           value={drafts['refiner.model'] ?? refiner.model ?? ''}
           disabled={!writable}
           onChange={(e) => setText('refiner', 'model', e.target.value)}
         />
+        <datalist id="dsh-memory-models">
+          {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
+        </datalist>
       </Field>
+      <Field label="密钥引用名（apiKeyEnv）" hint="凭据文件键名，自建供应商时与模型设置的 apiKeyEnv 一致">
+        <input
+          style={inputStyle}
+          type="text"
+          value={drafts['refiner.apiKeyEnv'] ?? refiner.apiKeyEnv ?? 'MEMORY_REFINER_API_KEY'}
+          disabled={!writable}
+          onChange={(e) => setText('refiner', 'apiKeyEnv', e.target.value)}
+        />
+      </Field>
+
+      {/* 独立密钥：password 输入，写凭据文件，绝不回显 */}
+      <div style={{ marginTop: 8, padding: 10, border: '1px solid #3a3a3a', borderRadius: 8, background: '#1a1a1a' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+          <span style={{ fontWeight: 500 }}>独立 API 密钥</span>
+          {keyState.checking
+            ? <span style={{ color: '#888', fontSize: 12 }}>检查中…</span>
+            : keyState.configured
+              ? <span style={{ color: '#4caf50', fontSize: 12 }}>● 已配置（{keyState.ref}）</span>
+              : <span style={{ color: '#e67e22', fontSize: 12 }}>○ 未配置（{keyState.ref}）</span>}
+        </div>
+        <p style={{ color: '#888', fontSize: 12, margin: '6px 0' }}>
+          密钥仅写入 <code>~/.dsh/.credentials.yaml</code>（私有文件），不进入设置文档、不进入记忆库、不在界面回显。
+        </p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+            type="password"
+            placeholder="粘贴密钥（留空不改）"
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+          />
+          <button
+            onClick={saveKey}
+            disabled={!keyDraft || keyState.writing}
+            style={{ padding: '4px 14px', borderRadius: 6, border: '1px solid #555', background: '#2a2a2a', color: '#eee', cursor: keyDraft ? 'pointer' : 'default' }}
+          >
+            {keyState.writing ? '保存中…' : '保存密钥'}
+          </button>
+        </div>
+        <p style={{ color: '#777', fontSize: 12, margin: '6px 0 0' }}>
+          自建独立供应商：在「设置 → 模型」添加 provider（npm: <code>@ai-sdk/openai-compatible</code>），apiKeyEnv 填上面的引用名，baseURL 填你的端点。
+        </p>
+      </div>
 
       <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
         <button onClick={save} disabled={!dirty || invalid || saving || !writable}
@@ -220,13 +314,14 @@ function MemorySettingsCard(props) {
 /** 浏览器端 apply：注册设置卡片。 */
 export function apply(ctx) {
   const scope = ctx.settingsScope.bind({ namespace: 'memory' })
+  const { api } = ctx.get('connection')
   ctx.slots.inject('settings.plugin.item', function* () {
     yield ctx.slots.register({
       name: 'settings.plugin.item',
       id: 'dsh-memory',
       order: 30,
       label: () => '记忆插件',
-      inject: () => ({ scope }),
+      inject: () => ({ scope, api }),
     }, MemorySettingsCard)
   })
 }
