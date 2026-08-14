@@ -1,14 +1,28 @@
 {
   "name": "dsh-memory",
   "description": "Advanced auto-memory plugin for DSH: layered memory + SQLite storage + graph skeleton + time dimension (worldline) + feature flags",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": {
       "default": "./lib/index.js"
     },
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "immediately": false
+    }
   },
   "license": "MIT",
   "private": true,
@@ -16,6 +30,7 @@
     "@deepseek-ai/cordis": ">=0.1.0",
     "@deepseek-ai/dsh-llm": ">=0.1.0",
     "@deepseek-ai/dsh-tools": ">=0.1.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.0",
     "@deepseek-ai/schemastery": ">=0.1.0"
   }
 }
