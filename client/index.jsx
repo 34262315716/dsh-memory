@@ -1,9 +1,9 @@
 /**
- * dsh-memory 客户端设置卡片（浏览器端）。
+ * dsh-memory 客户端设置面板（浏览器端）。
  *
- * 注册到「设置 → 插件」区域的 `settings.plugin.item` 插槽：
- * 用 ctx.settingsScope 读写 settings.yaml 的 `memory` 命名空间，
- * 与 host 端插件（ctx.settings.register）读写同一文档，改动 live 生效。
+ * 注册到设置页侧边栏导航（`settings.section` 插槽，与"通用设置/模型/插件"同级）：
+ * 点击"记忆"打开完整设置菜单。用 ctx.settingsScope 读写 settings.yaml 的
+ * `memory` 命名空间，与 host 端插件（ctx.settings.register）读写同一文档，改动 live 生效。
  *
  * 构建：esbuild 打包为 __ModuleLoader__.load({id, factory}) 格式（见 lib/client.js）。
  */
@@ -70,9 +70,8 @@ function CheckboxRow({ label, hint, checked, onChange }) {
   )
 }
 
-/** 设置卡片主组件。 */
-function MemorySettingsCard(props) {
-  const { scope, api } = props
+/** 设置面板主组件（侧边栏"记忆"导航项的完整设置菜单）。 */
+function MemorySettingsSection({ scope, api }) {
   const [snap, setSnap] = useState(() => scope.getSnapshot())
   useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope])
 
@@ -190,41 +189,64 @@ function MemorySettingsCard(props) {
   }
 
   if (status !== 'ready') {
-    return <p style={{ color: '#888', fontSize: 13 }}>记忆插件设置{status === 'loading' ? '加载中…' : '不可用'}</p>
+    return (
+      <div style={{ padding: 16, maxWidth: 680 }}>
+        <h3 style={{ margin: '0 0 8px', fontSize: 16 }}>记忆</h3>
+        <p style={{ color: '#888', fontSize: 13 }}>
+          记忆插件设置{status === 'loading' ? '加载中…' : '不可用（host 未注册 memory 命名空间）'}
+        </p>
+      </div>
+    )
   }
 
+  const blockStyle = {
+    marginTop: 16, padding: 14, border: '1px solid #3a3a3a', borderRadius: 10, background: '#1a1a1a',
+  }
+  const blockTitle = { margin: '0 0 4px', fontWeight: 600, fontSize: 14 }
+
   return (
-    <div style={{ padding: '12px 0' }}>
-      {NUMBER_FIELDS.map(([field, label, hint]) => (
-        <Field key={field} label={label} hint={hint}>
-          <input
-            style={inputStyle}
-            type="text"
-            value={num(field)}
-            disabled={!writable}
-            onChange={(e) => setNum(field, e.target.value)}
+    <div style={{ padding: 16, maxWidth: 680 }}>
+      <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>记忆</h3>
+      <p style={{ margin: '0 0 8px', color: '#888', fontSize: 13 }}>
+        dsh-memory 自动记忆插件——改动即时生效（live），写入 settings.yaml 的 memory 段。
+      </p>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>检索与注入</div>
+        {NUMBER_FIELDS.map(([field, label, hint]) => (
+          <Field key={field} label={label} hint={hint}>
+            <input
+              style={inputStyle}
+              type="text"
+              value={num(field)}
+              disabled={!writable}
+              onChange={(e) => setNum(field, e.target.value)}
+            />
+          </Field>
+        ))}
+      </div>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>功能开关</div>
+        {FEATURE_FIELDS.map(([field, label, hint]) => (
+          <CheckboxRow
+            key={field}
+            label={label}
+            hint={hint}
+            checked={bool('features', field, features)}
+            onChange={(e) => setBool('features', field, e.target.checked)}
           />
-        </Field>
-      ))}
+        ))}
+      </div>
 
-      <div style={{ marginTop: 12, fontWeight: 600, fontSize: 13 }}>功能开关</div>
-      {FEATURE_FIELDS.map(([field, label, hint]) => (
+      <div style={blockStyle}>
+        <div style={blockTitle}>独立提取模型（refiner）</div>
         <CheckboxRow
-          key={field}
-          label={label}
-          hint={hint}
-          checked={bool('features', field, features)}
-          onChange={(e) => setBool('features', field, e.target.checked)}
+          label="启用 LLM 提取"
+          hint="用独立模型蒸馏记忆，替代原始文本入库"
+          checked={bool('refiner', 'enabled', refiner)}
+          onChange={(e) => setBool('refiner', 'enabled', e.target.checked)}
         />
-      ))}
-
-      <div style={{ marginTop: 12, fontWeight: 600, fontSize: 13 }}>独立提取模型（refiner）</div>
-      <CheckboxRow
-        label="启用 LLM 提取"
-        hint="用独立模型蒸馏记忆，替代原始文本入库"
-        checked={bool('refiner', 'enabled', refiner)}
-        onChange={(e) => setBool('refiner', 'enabled', e.target.checked)}
-      />
       <Field label="供应商 Provider" hint="opencode-go / deepseek-official / 自建独立供应商">
         <input
           style={inputStyle}
@@ -294,8 +316,9 @@ function MemorySettingsCard(props) {
           自建独立供应商：在「设置 → 模型」添加 provider（npm: <code>@ai-sdk/openai-compatible</code>），apiKeyEnv 填上面的引用名，baseURL 填你的端点。
         </p>
       </div>
+      </div>
 
-      <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button onClick={save} disabled={!dirty || invalid || saving || !writable}
           style={{ padding: '4px 16px', borderRadius: 6, border: '1px solid #555', background: '#2a2a2a', color: '#eee', cursor: dirty ? 'pointer' : 'default' }}>
           {saving ? '保存中…' : '保存'}
@@ -311,17 +334,15 @@ function MemorySettingsCard(props) {
   )
 }
 
-/** 浏览器端 apply：注册设置卡片。 */
+/** 浏览器端 apply：注册设置侧边栏导航项 + 完整设置面板。 */
 export function apply(ctx) {
   const scope = ctx.settingsScope.bind({ namespace: 'memory' })
   const { api } = ctx.get('connection')
-  ctx.slots.inject('settings.plugin.item', function* () {
-    yield ctx.slots.register({
-      name: 'settings.plugin.item',
-      id: 'dsh-memory',
-      order: 30,
-      label: () => '记忆插件',
-      inject: () => ({ scope, api }),
-    }, MemorySettingsCard)
-  })
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'memory',
+    order: 25,
+    label: () => '记忆',
+    inject: () => ({ scope, api }),
+  }, MemorySettingsSection))
 }
