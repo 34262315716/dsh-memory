@@ -223,12 +223,32 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 - 五套测试 73 项全过；client bundle 重建（59KB）
 - 版本号 0.6.0 → 0.7.0
 
+## v0.8.0 — 图模型简化（memory_links）+ 管家子代理（2026-08-16）
+
+按「下一步」清单推进 ③ ④（决策：③ 实体图保留为共现骨架，记忆级边独立成表）。
+
+### ③ 图模型简化：记忆级边独立表
+- **新表 `memory_links`**（from_memory/to_memory/type/weight/valid_from/valid_to，8 型 CHECK，记忆删除级联）：记忆级语义边的一等存储，不再绕「实体代表节点」
+- **link/linkSimilar/linkMemories/linkBefore/unlink 迁移**：写 memory_links（幂等 UPSERT 重新激活 + 更新权重；unlink valid_to 置位历史保留）；link 语义从「节点集全连接」（边爆炸源头）收敛为「记忆对单边」；无实体节点（停用词过滤后）也能连边——修复原依赖实体节点的隐性缺陷
+- **buildGraphSnapshot 直读 memory_links**：删除 node_memories memOf 回查复杂度，GUI 投影更简单可靠
+- **新方法 memoryPath / memoryLinkNeighbors**：记忆级 BFS（双向）——后续图工具升级的基础
+- **启动迁移（幂等）**：旧库 edges 表 similarTo/before 活跃边 → memory_links（生产库副本验证：149 条迁移成功，原库不动）；实体图 nodes/edges/node_memories/communities 保留（mentions 共现 + graph 工具向后兼容）
+- test-phase3 扩至 21 项（memory_links 断言 + 记忆级路径/邻域 + 级联删除 + 迁移专项）
+
+### ④ 管家子代理（rule 优先，不擅自删数据）
+- **store 方法**：`dedupScan`（sm 两两余弦近重复扫描，嵌入缓存命中）/ `agingReport`（创建超 N 天且闲置的低价值候选）/ `housekeeping`（组合巡检；dryRun=false 自动合并 sim ≥ 0.95 的几乎重复对——强度高者保留，source 并入删除）
+- **memory_housekeeping 工具**：dryRun 默认 true（只报告）；参数 minSimilarity/agingDays；输出近重复对 + 老化清单 + 合并数
+- **自动巡检**：turn/end 每 housekeeping.interval（默认 50）轮跑一次只读巡检 → 发现候选写日志（提示调工具处理），不注入不擅改
+- settings 新增 housekeeping 段（enabled/interval/dedupThreshold/agingDays）
+- 新测试 test-housekeeping.mjs（8 项）；六套测试 85 项全过；生产库副本验证通过（73 记忆 / 361 实体节点 / memory_links 149 条，无近重复无老化候选）
+- 版本号 0.7.0 → 0.8.0
+
 ## 下一步（方案已备，按优先级）
 
 - ① reranker 接入 search ✅（v0.7.0）→ 待办：真实 API 端到端 A/B（开启重排对比注入命中率）
 - ② GUI 嵌入/重排设置区块 ✅（v0.7.0）→ 待办：provider 切换热迁移 UI 提示
-- ③ 图模型简化：视图层已做「一记忆一节点」投影，store 实体图（node_memories）是否简化待定
-- ④ 管家子代理（全局去重/老化清扫/画像蒸馏）
+- ③ 图模型简化 ✅（v0.8.0：memory_links 独立表 + 投影直读 + 迁移）→ 待办：memory_graph_path/neighbors 工具升级为记忆级（memoryPath/memoryLinkNeighbors 已就绪）；实体图是否彻底下线待定
+- ④ 管家子代理 ✅（v0.8.0 期1：去重扫描/老化报告/自动合并/低频自动巡检）→ 待办：画像蒸馏（LLM 聚合 preference/decision 生成用户画像，复用 refiner）
 - ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）
 - ⑥ Leiden 聚类暂缓（被记忆级主题聚类替代）；规模/高级按需（KuzuDB/LanceDB 等）
 - ⑦ 图谱力导向参数进 settings ✅（v0.7.0：spring/repulsion/damping/gravity live 生效）
