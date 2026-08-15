@@ -674,6 +674,37 @@ const THEME_COLORS = [
   '#4db6ac', '#a1887f', '#7986cb', '#f06292', '#26a69a', '#8d6e63',
 ]
 
+/** 新旧色温（四维蠕虫的时间维度）：按创建时间把主题色压暗——新=原色亮，旧=暗。
+ *  库内相对映射（minCreatedAt=库内最早创建时间）：任意时间跨度下新旧对比都明显。 */
+function ageShade(hex, createdAt, minCreatedAt, now = Date.now()) {
+  const span = Math.max(1, now - (minCreatedAt ?? now))
+  const ratio = 1 - Math.max(0, Math.min(1, (now - (createdAt ?? now)) / span)) * 0.55
+  const n = parseInt(String(hex).slice(1), 16)
+  if (Number.isNaN(n)) return hex
+  const r = Math.round(((n >> 16) & 255) * ratio)
+  const g = Math.round(((n >> 8) & 255) * ratio)
+  const b = Math.round((n & 255) * ratio)
+  return `rgb(${r},${g},${b})`
+}
+
+/** 记忆时间筛选窗口。 */
+const AGE_WINDOWS = [
+  ['all', '全部'],
+  ['7d', '近 7 天'],
+  ['30d', '近 30 天'],
+  ['90d', '近 90 天'],
+  ['old', '90 天以上'],
+]
+
+/** 相对时间文案（中文）。 */
+function agoText(ts, now = Date.now()) {
+  const d = Math.max(0, Math.floor((now - ts) / (24 * 3600 * 1000)))
+  if (d <= 0) return '今天'
+  if (d < 30) return `${d} 天前`
+  if (d < 365) return `${Math.floor(d / 30)} 个月前`
+  return `${Math.floor(d / 365)} 年前`
+}
+
 /** 主题环形布局：每个主题一个扇区，组内节点均匀分布；返回 id → [x, y]。 */
 function layoutNodes(data, W, H) {
   const cx = W / 2, cy = H / 2
@@ -739,9 +770,12 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     for (const e of data.edges) { degree.set(e.from, (degree.get(e.from) ?? 0) + 1); degree.set(e.to, (degree.get(e.to) ?? 0) + 1) }
     // 初始位置：主题环形布局（力导向从有序起点自然展开，观感优雅）
     const init = layoutNodes(data, W(), H())
+    const now = Date.now()
+    const minCreated = Math.min(...data.nodes.map((n) => n.createdAt ?? now), now)
     const nodes = data.nodes.map((n) => {
       const p = init.positions.get(n.id) ?? [W() / 2 + (Math.random() - 0.5) * 60, H() / 2 + (Math.random() - 0.5) * 60]
-      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: colorOf(n.theme) }
+      // 新旧色温：新记忆亮、旧记忆暗（时间作为第四维的视觉编码；库内相对映射）
+      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now) }
     })
     const nodeById = new Map(nodes.map((n) => [n.id, n]))
     const edges = data.edges.map((e) => ({ ...e, a: nodeById.get(e.from), b: nodeById.get(e.to) })).filter((e) => e.a && e.b)
@@ -866,10 +900,28 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
         ctx.fillStyle = n.color
         ctx.fill()
+        // 版本环（四维蠕虫的时间痕迹）：更新过几次 = 几圈年轮（封顶 3 圈）
+        if (n.versions > 1) {
+          const rings = Math.min(n.versions - 1, 3)
+          const step = 3.2 / Math.sqrt(transform.k)
+          for (let ri = 0; ri < rings; ri++) {
+            ctx.beginPath()
+            ctx.arc(n.x, n.y, r + 3 + ri * step, 0, Math.PI * 2)
+            ctx.strokeStyle = "#ffd54f"
+            ctx.lineWidth = 1.3 / Math.sqrt(transform.k)
+            ctx.stroke()
+          }
+        }
         if (isFocus) {
           ctx.strokeStyle = "#fff"
           ctx.lineWidth = 1.5 / transform.k
           ctx.stroke()
+          // 悬浮/选中标签：创建时间 + 更新次数（四维蠕虫的时间信息）
+          const tag = `${agoText(n.createdAt)}${(n.versions ?? 1) > 1 ? ` · 更新 ${(n.versions ?? 1) - 1} 次` : ''}`
+          ctx.font = (10 / transform.k) + "px sans-serif"
+          ctx.textAlign = "center"
+          ctx.fillStyle = "#ddd"
+          ctx.fillText(tag, n.x, n.y - r - 10 / transform.k)
         }
         if (transform.k > 0.65 || isFocus) {
           ctx.globalAlpha = isFocus || !focusId ? 1 : 0.3
@@ -1001,6 +1053,15 @@ const DetailPanel = memo(function DetailPanel({ selected, data }) {
       <p style={{ fontSize: 12, color: "#888", margin: "0 0 10px" }}>
         {selected.type} · {selected.layer} · strength {selected.strength} · {new Date(selected.createdAt).toLocaleString("zh-CN", { hour12: false })}
       </p>
+      <p style={{ fontSize: 12, margin: "0 0 10px" }}>
+        {(selected.versions ?? 1) > 1
+          ? <span style={{ color: "#ffd54f" }}>◉ 更新过 {(selected.versions ?? 1) - 1} 次（世界线 {(selected.versions ?? 1)} 段）</span>
+          : <span style={{ color: "#777" }}>○ 未更新过（单版本）</span>}
+        <span style={{ color: "#888" }}> · 创建于 {agoText(selected.createdAt)}</span>
+        {selected.updatedAt && selected.updatedAt !== selected.createdAt
+          ? <span style={{ color: "#888" }}> · 最后更新 {agoText(selected.updatedAt)}</span>
+          : null}
+      </p>
       <p style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{selected.content}</p>
       <h5 style={{ margin: "14px 0 6px", fontSize: 12, color: "#aaa" }}>关联记忆</h5>
       {(adj.get(selected.id) ?? []).length === 0 ? (
@@ -1063,6 +1124,27 @@ function MemoryGraphView({ scope }) {
     drawRef.current?.()
   }, [selected])
 
+  // 时间筛选（四维蠕虫：只看某时间窗内的记忆）
+  const [ageWindow, setAgeWindow] = useState("all")
+  const filtered = useMemo(() => {
+    if (!data) return data
+    if (ageWindow === "all") return data
+    const now = Date.now()
+    const cutoffOld = now - 90 * 24 * 3600 * 1000
+    const inWindow = (ts) => {
+      if (ageWindow === "old") return (ts ?? 0) < cutoffOld
+      const days = Number(ageWindow.replace("d", ""))
+      return (ts ?? 0) >= now - days * 24 * 3600 * 1000
+    }
+    const ids = new Set(data.nodes.filter((n) => inWindow(n.createdAt)).map((n) => n.id))
+    return {
+      ...data,
+      nodes: data.nodes.filter((n) => ids.has(n.id)),
+      edges: data.edges.filter((e) => ids.has(e.from) && ids.has(e.to)),
+    }
+  }, [data, ageWindow])
+  const updatedCount = (filtered?.nodes ?? []).filter((n) => (n.versions ?? 1) > 1).length
+
   if (error) {
     return (
       <div style={{ padding: 24 }}>
@@ -1079,18 +1161,32 @@ function MemoryGraphView({ scope }) {
   return (
     <div style={{ display: "flex", height: "100%", minHeight: 560, gap: 0 }}>
       <div style={{ flex: 1, minWidth: 0, position: "relative", minHeight: 560 }}>
-        <div style={{ position: "absolute", top: 10, left: 14, fontSize: 12, color: "#aaa", zIndex: 2 }}>
-          记忆 {data.stats.memories} · 主题 {data.themes.length} · 关系 {data.edges.length}
-          <button onClick={load} style={{ marginLeft: 10, padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
+        <div style={{ position: "absolute", top: 10, left: 14, fontSize: 12, color: "#aaa", zIndex: 2, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span>
+            记忆 {filtered.nodes.length} · 更新过 {updatedCount} · 主题 {filtered.themes.length} · 关系 {filtered.edges.length}
+          </span>
+          <select
+            value={ageWindow}
+            onChange={(e) => setAgeWindow(e.target.value)}
+            style={{ padding: "1px 6px", fontSize: 12, borderRadius: 5, border: "1px solid #555", background: "#1a1a1a", color: "#ccc" }}
+            title="按创建时间筛选记忆（时间维度）"
+          >
+            {AGE_WINDOWS.map(([v, label]) => (
+              <option key={v} value={v}>{label}</option>
+            ))}
+          </select>
+          <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
-        <ObsidianGraph data={data} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} />
-        <div style={{ position: "absolute", left: 14, bottom: 10, fontSize: 11, color: "#777" }}>
+        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} />
+        <div style={{ position: "absolute", left: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2 }}>
           <span style={{ color: "#5b9bd5" }}>— similarTo 语义相似</span>
           <span style={{ marginLeft: 10, color: "#e07b39" }}>→ before 时间演化</span>
-          <span style={{ marginLeft: 10 }}>拖节点 · 拖空白平移 · 滚轮缩放 · 点击看详情</span>
+          <span style={{ marginLeft: 10, color: "#ffd54f" }}>◎ 外环 = 更新过（环数 = 更新次数）</span>
+          <span style={{ marginLeft: 10 }}>色浅新 · 色深旧</span>
+          <span style={{ marginLeft: 10 }}>拖节点 · 平移 · 缩放 · 点击看详情</span>
         </div>
       </div>
-      <DetailPanel selected={selected} data={data} />
+      <DetailPanel selected={selected} data={filtered} />
     </div>
   )
 }
