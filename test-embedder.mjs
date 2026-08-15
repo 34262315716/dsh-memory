@@ -124,6 +124,12 @@ const mkStore = async (reranker, rerankCfg) => {
   await store.add({ layer: 'sm', type: 'note', scope: 'test', content: '深蓝海洋的记忆内容', keywords: ['深蓝', '海洋'] })
   const hits = await store.search('蓝海', { scope: 'test', limit: 3, minScore: 0 })
   check('向量独有命中不再丢失', hits.length === 1)
+  // 阈值语义（RRF 量纲：理论上限三路全中 ~0.049）：
+  // 旧默认 0.2 超过理论上限 → 永不注入（pre-step 注入从未触发的根因）；新默认 0.015 放行
+  const hits20 = await store.search('蓝海', { scope: 'test', limit: 3, minScore: 0.2 })
+  const hits015 = await store.search('蓝海', { scope: 'test', limit: 3, minScore: 0.015 })
+  check('minScore 0.2 过滤一切命中（旧默认永不注入的根因）', hits20.length === 0)
+  check('minScore 0.015 放行命中（新默认）', hits015.length === 1)
   store.close(); rmSync(dir, { recursive: true, force: true })
 }
 

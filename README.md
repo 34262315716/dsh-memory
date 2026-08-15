@@ -107,7 +107,7 @@ memory:
   dbFile: ''                # 留空 = ~/.dsh/memory.db
   scope: ''                 # 留空 = global
   injectMaxTokens: 800      # 每次注入 token 预算
-  injectMinScore: 0.2       # 注入最低相关分
+  injectMinScore: 0.015     # 注入最低相关分（RRF 融合量纲，三路全中 ~0.049；0.015 ≈ 至少一路排前 13）
   stepInterval: 2           # 步距节流（每 N 步全量检索）
   maxRecentPerAgent: 6      # 防循环窗口
   maxVersionsPerMemory: 8   # 世界线长度

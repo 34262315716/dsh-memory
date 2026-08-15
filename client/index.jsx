@@ -17,7 +17,7 @@ export const inject = ['slots', 'settingsScope', 'connection', 'remote']
 const NUMBER_FIELDS = [
   ['injectMaxTokens', '注入最大 token/次', '每次自动注入的 token 预算'],
   ['stepInterval', '步距节流', '每 N 步做一次全量检索'],
-  ['injectMinScore', '注入最低相关分', '低于该分数的记忆不注入'],
+  ['injectMinScore', '注入最低相关分', 'RRF 融合量纲（三路全中 ~0.049）；默认 0.015 ≈ 至少一路排前 13，低于该分数的记忆不注入'],
   ['maxVersionsPerMemory', '版本上限（世界线长度）', '每条记忆最多保留的版本数'],
 ]
 
