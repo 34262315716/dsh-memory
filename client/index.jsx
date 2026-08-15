@@ -37,7 +37,7 @@ const REFINER_FIELDS = [
   ['enabled', '启用 LLM 提取', '用独立模型蒸馏记忆，替代原始文本入库'],
   ['provider', '供应商 Provider', '已配置的 provider 路由（下拉预设；自建端点可选自定义）'],
   ['model', '模型', '选定供应商的模型目录（下拉预设；可自定义 id）'],
-  ['apiKeyEnv', '密钥引用名', '凭据文件中的键名（默认 MEMORY_REFINER_API_KEY），自建供应商时与模型设置的 apiKeyEnv 保持一致'],
+  ['apiKeyEnv', '独立密钥槽引用', '仅当选中供应商未声明 apiKeyEnv 时生效（自建供应商场景），默认 MEMORY_REFINER_API_KEY'],
 ]
 
 function Field({ label, hint, children }) {
@@ -67,9 +67,13 @@ function CheckboxRow({ label, hint, checked, onChange }) {
 }
 
 /** 设置面板主组件（侧边栏"记忆"导航项的完整设置菜单）。 */
-function MemorySettingsSection({ scope, api }) {
+function MemorySettingsSection({ scope, api, llmScope }) {
   const [snap, setSnap] = useState(() => scope.getSnapshot())
   useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope])
+
+  // 供应商配置目录（llm-pi-ai 命名空间）：每个供应商自己的密钥引用（apiKeyEnv）与端点
+  const [llmSnap, setLlmSnap] = useState(() => llmScope.getSnapshot())
+  useEffect(() => llmScope.subscribe(() => setLlmSnap(llmScope.getSnapshot())), [llmScope])
 
   const [drafts, setDrafts] = useState({})
   const [saving, setSaving] = useState(false)
@@ -99,9 +103,23 @@ function MemorySettingsSection({ scope, api }) {
   const writable = snap.writable ?? false
   const status = snap.status
 
+  // 供应商/模型预设选择状态（先于密钥逻辑，keyRef 依赖 providerValue）
+  const providerValue = drafts['refiner.provider'] ?? refiner.provider ?? ''
+  const providerIsPreset = providers.some((p) => p.provider === providerValue)
+  const providerModels = modelGroups.find((g) => g.id === providerValue)?.models ?? []
+  const modelValue = drafts['refiner.model'] ?? refiner.model ?? ''
+  const modelIsPreset = providerModels.some((m) => m.id === modelValue)
+
+  // llm-pi-ai 命名空间的供应商配置（providers 字典，profile 含 apiKeyEnv/baseURL）
+  const providersCfg = (llmSnap?.value?.providers ?? {})
+  const selectedProfile = providersCfg[providerValue] ?? {}
+
+  /** 密钥目标引用：跟随选中供应商自己的 apiKeyEnv；供应商未声明时回退 refiner.apiKeyEnv（独立槽）。 */
   const keyRef = () => {
+    const declared = typeof selectedProfile?.apiKeyEnv === 'string' && selectedProfile.apiKeyEnv !== ''
     const d = drafts['refiner.apiKeyEnv']
-    return (d !== undefined && d !== '' ? d : refiner.apiKeyEnv) || 'MEMORY_REFINER_API_KEY'
+    const fallback = (d !== undefined && d !== '' ? d : refiner.apiKeyEnv) || 'MEMORY_REFINER_API_KEY'
+    return declared ? selectedProfile.apiKeyEnv : fallback
   }
 
   const checkKey = async () => {
@@ -115,7 +133,7 @@ function MemorySettingsSection({ scope, api }) {
       setKeyState((s) => ({ ...s, checking: false }))
     }
   }
-  useEffect(() => { void checkKey() }, [drafts['refiner.apiKeyEnv'], refiner.apiKeyEnv])
+  useEffect(() => { void checkKey() }, [drafts['refiner.apiKeyEnv'], refiner.apiKeyEnv, providerValue, llmSnap])
 
   const saveKey = async () => {
     if (!keyDraft) return
@@ -147,13 +165,6 @@ function MemorySettingsSection({ scope, api }) {
   const setNum = (field, text) => setDrafts((d) => ({ ...d, [field]: text }))
   const setBool = (group, field, v) => setDrafts((d) => ({ ...d, [`${group}.${field}`]: v }))
   const setText = (group, field, text) => setDrafts((d) => ({ ...d, [`${group}.${field}`]: text }))
-
-  // 供应商/模型预设选择状态
-  const providerValue = drafts['refiner.provider'] ?? refiner.provider ?? ''
-  const providerIsPreset = providers.some((p) => p.provider === providerValue)
-  const providerModels = modelGroups.find((g) => g.id === providerValue)?.models ?? []
-  const modelValue = drafts['refiner.model'] ?? refiner.model ?? ''
-  const modelIsPreset = providerModels.some((m) => m.id === modelValue)
 
   const dirty = Object.keys(drafts).length > 0
   const invalid = Object.entries(drafts).some(([k, v]) => !k.includes('.') && v !== '' && Number.isNaN(Number(v)))
@@ -331,10 +342,10 @@ function MemorySettingsSection({ scope, api }) {
         />
       </Field>
 
-      {/* 独立密钥：password 输入，写凭据文件，绝不回显 */}
+      {/* 独立密钥：password 输入，写凭据文件，绝不回显；目标引用自动跟随选中供应商 */}
       <div style={{ marginTop: 8, padding: 10, border: '1px solid #3a3a3a', borderRadius: 8, background: '#1a1a1a' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-          <span style={{ fontWeight: 500 }}>独立 API 密钥</span>
+          <span style={{ fontWeight: 500 }}>API 密钥</span>
           {keyState.checking
             ? <span style={{ color: '#888', fontSize: 12 }}>检查中…</span>
             : keyState.configured
@@ -342,13 +353,16 @@ function MemorySettingsSection({ scope, api }) {
               : <span style={{ color: '#e67e22', fontSize: 12 }}>○ 未配置（{keyState.ref}）</span>}
         </div>
         <p style={{ color: '#888', fontSize: 12, margin: '6px 0' }}>
-          密钥仅写入 <code>~/.dsh/.credentials.yaml</code>（私有文件），不进入设置文档、不进入记忆库、不在界面回显。
+          {selectedProfile?.apiKeyEnv
+            ? <>密钥引用<b>自动跟随供应商</b>：{providerValue} → <code>{selectedProfile.apiKeyEnv}</code>（host 调用时按此引用解析）</>
+            : <>该供应商未声明密钥引用，使用独立密钥槽 <code>{keyRef()}</code>（自建端点场景）</>}
+          {' '}密钥仅写入 <code>~/.dsh/.credentials.yaml</code>（私有文件），不进入设置文档、不进入记忆库、不在界面回显。
         </p>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             style={{ ...inputStyle, marginTop: 0, flex: 1 }}
             type="password"
-            placeholder="粘贴密钥（留空不改）"
+            placeholder={`粘贴密钥到 ${keyRef()}（留空不改）`}
             value={keyDraft}
             onChange={(e) => setKeyDraft(e.target.value)}
           />
@@ -361,7 +375,7 @@ function MemorySettingsSection({ scope, api }) {
           </button>
         </div>
         <p style={{ color: '#777', fontSize: 12, margin: '6px 0 0' }}>
-          自建独立供应商：在「设置 → 模型」添加 provider（npm: <code>@ai-sdk/openai-compatible</code>），apiKeyEnv 填上面的引用名，baseURL 填你的端点。
+          换供应商后此处自动切换到新供应商的密钥引用（已配置则显示 ●）；自建独立供应商：在「设置 → 模型」添加 provider（npm: <code>@ai-sdk/openai-compatible</code>），apiKeyEnv 填 <code>MEMORY_REFINER_API_KEY</code>，baseURL 填你的端点。
         </p>
       </div>
       </div>
@@ -385,12 +399,13 @@ function MemorySettingsSection({ scope, api }) {
 /** 浏览器端 apply：注册设置侧边栏导航项 + 完整设置面板。 */
 export function apply(ctx) {
   const scope = ctx.settingsScope.bind({ namespace: 'memory' })
+  const llmScope = ctx.settingsScope.bind({ namespace: 'llm-pi-ai' })
   const { api } = ctx.get('connection')
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'memory',
     order: 25,
     label: () => '记忆',
-    inject: () => ({ scope, api }),
+    inject: () => ({ scope, api, llmScope }),
   }, MemorySettingsSection))
 }
