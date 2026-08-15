@@ -35,14 +35,10 @@ const FEATURE_FIELDS = [
 /** 提取模型字段（refiner 子对象）。 */
 const REFINER_FIELDS = [
   ['enabled', '启用 LLM 提取', '用独立模型蒸馏记忆，替代原始文本入库'],
-  ['provider', '供应商 Provider', '已注册的 provider 路由（opencode-go / deepseek-official / 自建）'],
-  ['model', '模型', '如 deepseek-v4-flash / deepseek-v4-pro / mimo-v2.5'],
+  ['provider', '供应商 Provider', '已配置的 provider 路由（下拉预设；自建端点可选自定义）'],
+  ['model', '模型', '选定供应商的模型目录（下拉预设；可自定义 id）'],
   ['apiKeyEnv', '密钥引用名', '凭据文件中的键名（默认 MEMORY_REFINER_API_KEY），自建供应商时与模型设置的 apiKeyEnv 保持一致'],
 ]
-
-/** 常用模型建议。 */
-const MODEL_SUGGESTIONS = ['deepseek-v4-flash', 'deepseek-v4-pro', 'mimo-v2.5']
-const PROVIDER_SUGGESTIONS = ['opencode-go', 'deepseek-official', 'memory-refiner', 'deepseek']
 
 function Field({ label, hint, children }) {
   return (
@@ -78,6 +74,20 @@ function MemorySettingsSection({ scope, api }) {
   const [drafts, setDrafts] = useState({})
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+
+  // 供应商/模型预设：从 DSH 的 LLM 目录动态获取（已配置 providers + 各 provider 的模型目录）
+  const [providers, setProviders] = useState([])
+  const [modelGroups, setModelGroups] = useState([])
+  useEffect(() => {
+    let alive = true
+    api.llm.providers({}).then((r) => {
+      if (alive && r?.result?.ok) setProviders(r.result.value.providers ?? [])
+    }).catch(() => {})
+    api.llm.models({}).then((r) => {
+      if (alive && r?.result?.ok) setModelGroups(r.result.value.groups ?? [])
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [api])
 
   // 独立密钥状态：只报告"已配置/未配置"，绝不含密钥本身
   const [keyState, setKeyState] = useState({ ref: '', configured: false, checking: false, writing: false })
@@ -137,6 +147,13 @@ function MemorySettingsSection({ scope, api }) {
   const setNum = (field, text) => setDrafts((d) => ({ ...d, [field]: text }))
   const setBool = (group, field, v) => setDrafts((d) => ({ ...d, [`${group}.${field}`]: v }))
   const setText = (group, field, text) => setDrafts((d) => ({ ...d, [`${group}.${field}`]: text }))
+
+  // 供应商/模型预设选择状态
+  const providerValue = drafts['refiner.provider'] ?? refiner.provider ?? ''
+  const providerIsPreset = providers.some((p) => p.provider === providerValue)
+  const providerModels = modelGroups.find((g) => g.id === providerValue)?.models ?? []
+  const modelValue = drafts['refiner.model'] ?? refiner.model ?? ''
+  const modelIsPreset = providerModels.some((m) => m.id === modelValue)
 
   const dirty = Object.keys(drafts).length > 0
   const invalid = Object.entries(drafts).some(([k, v]) => !k.includes('.') && v !== '' && Number.isNaN(Number(v)))
@@ -247,31 +264,62 @@ function MemorySettingsSection({ scope, api }) {
           checked={bool('refiner', 'enabled', refiner)}
           onChange={(e) => setBool('refiner', 'enabled', e.target.checked)}
         />
-      <Field label="供应商 Provider" hint="opencode-go / deepseek-official / 自建独立供应商">
-        <input
+      <Field label="供应商 Provider" hint="从已配置的供应商预设中选择（自建端点选自定义）">
+        <select
           style={inputStyle}
-          type="text"
-          list="dsh-memory-providers"
-          value={drafts['refiner.provider'] ?? refiner.provider ?? ''}
+          value={providerIsPreset ? providerValue : '__custom__'}
           disabled={!writable}
-          onChange={(e) => setText('refiner', 'provider', e.target.value)}
-        />
-        <datalist id="dsh-memory-providers">
-          {PROVIDER_SUGGESTIONS.map((p) => <option key={p} value={p} />)}
-        </datalist>
+          onChange={(e) => setText('refiner', 'provider', e.target.value === '__custom__' ? '' : e.target.value)}
+        >
+          <option value="">— 未选择 —</option>
+          {providers.map((p) => (
+            <option key={p.provider} value={p.provider}>
+              {p.displayName || p.provider}（{p.provider}）{p.active ? '' : ' · 未启用'}
+            </option>
+          ))}
+          <option value="__custom__">自定义…</option>
+        </select>
+        {!providerIsPreset && (
+          <input
+            style={{ ...inputStyle, marginTop: 6 }}
+            type="text"
+            placeholder="自定义供应商路由名"
+            value={providerValue}
+            disabled={!writable}
+            onChange={(e) => setText('refiner', 'provider', e.target.value)}
+          />
+        )}
       </Field>
-      <Field label="模型" hint="deepseek-v4-flash / deepseek-v4-pro / mimo-v2.5">
-        <input
+      <Field
+        label="模型"
+        hint={providerModels.length > 0
+          ? `"${providerValue}" 的模型目录（${providerModels.length} 个）`
+          : '选择供应商后显示其模型目录（自定义模型 id 可选"自定义"）'}
+      >
+        <select
           style={inputStyle}
-          type="text"
-          list="dsh-memory-models"
-          value={drafts['refiner.model'] ?? refiner.model ?? ''}
+          value={modelIsPreset ? modelValue : '__custom__'}
           disabled={!writable}
-          onChange={(e) => setText('refiner', 'model', e.target.value)}
-        />
-        <datalist id="dsh-memory-models">
-          {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
-        </datalist>
+          onChange={(e) => setText('refiner', 'model', e.target.value === '__custom__' ? '' : e.target.value)}
+        >
+          <option value="">— 未选择 —</option>
+          {providerModels.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name && m.name !== m.id ? `${m.name}（${m.id}）` : m.id}
+            </option>
+          ))}
+          <option value="__custom__">自定义…</option>
+        </select>
+        {!modelIsPreset && (
+          <input
+            style={{ ...inputStyle, marginTop: 6 }}
+            type="text"
+            placeholder="自定义模型 id"
+            value={modelValue}
+            disabled={!writable}
+            onChange={(e) => setText('refiner', 'model', e.target.value)}
+          />
+        )}
       </Field>
       <Field label="密钥引用名（apiKeyEnv）" hint="凭据文件键名，自建供应商时与模型设置的 apiKeyEnv 一致">
         <input
