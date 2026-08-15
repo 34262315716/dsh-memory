@@ -14,21 +14,21 @@ function check(name, cond) {
 }
 
 console.log('== 1. 写入与读取 ==')
-const id1 = store.add({ layer: 'sm', type: 'preference', scope: 'global', content: '用户偏好使用 SQLite 存储记忆', keywords: [...tokenize('用户偏好使用 SQLite 存储记忆')] })
-const id2 = store.add({ layer: 'ep', scope: 'global', content: '今天修复了 FTS5 trigram 中文检索问题', keywords: [...tokenize('今天修复了 FTS5 trigram 中文检索问题')] })
+const id1 = await store.add({ layer: 'sm', type: 'preference', scope: 'global', content: '用户偏好使用 SQLite 存储记忆', keywords: [...tokenize('用户偏好使用 SQLite 存储记忆')] })
+const id2 = await store.add({ layer: 'ep', scope: 'global', content: '今天修复了 FTS5 trigram 中文检索问题', keywords: [...tokenize('今天修复了 FTS5 trigram 中文检索问题')] })
 check('add 返回 id', id1.startsWith('mem-'))
 check('get 读取', store.get(id1)?.content.includes('SQLite'))
 
 console.log('== 2. 中文检索（三路） ==')
-const r1 = store.search('SQLite 存储', { scope: 'global' })
+const r1 = await store.search('SQLite 存储', { scope: 'global' })
 check('FTS 英文词命中', r1.some((r) => r.id === id1))
-const r2 = store.search('中文检索', { scope: 'global' })
+const r2 = await store.search('中文检索', { scope: 'global' })
 check('2 字中文子串兜底命中', r2.some((r) => r.id === id2))
 
 console.log('== 3. 版本化（世界线） ==')
-const u1 = store.update(id1, { content: '用户偏好使用 SQLite 存储记忆（更新版：改用 node:sqlite）', keywords: [...tokenize('用户偏好使用 SQLite 存储记忆 node:sqlite')] })
+const u1 = await store.update(id1, { content: '用户偏好使用 SQLite 存储记忆（更新版：改用 node:sqlite）', keywords: [...tokenize('用户偏好使用 SQLite 存储记忆 node:sqlite')] })
 check('第一次更新 revision=2', u1.revision === 2)
-const u2 = store.update(id1, { content: '用户偏好使用 SQLite 存储记忆（最终版：WAL+STRICT）', keywords: [...tokenize('用户偏好使用 SQLite 存储记忆 WAL STRICT')] })
+const u2 = await store.update(id1, { content: '用户偏好使用 SQLite 存储记忆（最终版：WAL+STRICT）', keywords: [...tokenize('用户偏好使用 SQLite 存储记忆 WAL STRICT')] })
 check('第二次更新 revision=3', u2.revision === 3)
 const v = store.versions(id1, 10)
 check('版本链 3 段', v.length === 3 && v[0].revision === 3 && v[2].revision === 1)
@@ -54,7 +54,7 @@ check('统计有记忆', st.memories >= 2 && st.versions >= 4 && st.nodes >= 3)
 check('forget 删除', store.forget(id2) === true && store.get(id2) === undefined)
 
 console.log('== 7. 检索排除已删记忆 ==')
-const r3 = store.search('FTS5', { scope: 'global' })
+const r3 = await store.search('FTS5', { scope: 'global' })
 check('已删记忆不再命中', !r3.some((r) => r.id === id2))
 
 store.close()

@@ -78,7 +78,131 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 8. **注入块必须确定性排序 + 稳定格式**——KV 缓存前缀复用的前提
 9. **写入侧只收 `source.kind==='user'`**——否则注入内容被当新记忆嵌套沉淀
 
+## v0.4.2 — upsertMemory 致命崩溃修复
+
+- **修复**：`upsertMemory` 相似合并路径对 `store.list()` 已解析的 keywords 数组再次 `JSON.parse` → `Unexpected token 'o', "now,have,en"...` 致命错误（触发条件：dedupMerge 开启 + 相似记忆合并——refiner 降级路径下的高频路径；错误信息即关键词数组被 toString 的开头）
+- 顺带修复：图谱挂接按时间倒序取第一条可能挂错记忆 → 改用 add/update 返回值
+- 补齐 `test-phase2.mjs`（18 项：向量/图遍历/遗忘/merge-purge/社区），版本号升至 0.4.1 并同步部署副本
+
+## v0.4.3 — 写入质量 + 阶段三启动（世界线回滚）
+
+- **价值门升级**：无用户消息的自主轮次 → 仅当输出含成果信号（✅/已完成/已修复/交付/结论等）才沉淀，过滤思考中间态噪音（此前「任务: (无显式用户消息)」快照照单全收）
+- **refiner 价值预判**：过短（<40 字）或无实词（<3 关键词）的低价值轮次不再送 LLM，直接规则路径——省成本
+- **阶段三① 世界线回滚**：`store.rollback(id, revision)`（当前活跃版 valid_to 置为 now、目标版本快照追加为新 revision、活跃切片/FTS/向量同步、世界线不断链）+ `memory_versions`/`memory_rollback` 工具
+- 新增 `test-phase3.mjs`（7 项：回滚/二次回滚/检索见恢复内容/错误处理），三套测试共 41 项全过
+
+## v0.5.0 — 阶段三② 8 型边全量（图谱语义化）
+
+- **建图幂等化**：节点/边改为确定性 id（sha1(label+memory) / sha1(type+from+to)）——重复 graphLink 不再产生重复节点边；insertEdge 改 UPSERT（断边后再连 = 重新激活 + 更新权重）
+- **记忆级连边**：`store.link(a, b, type, weight)` 跨记忆节点集连 8 型边；`unlink` 断开（valid_to 置位，历史保留）
+- **自动建边**：similarTo（Jaccard 0.5~0.8 相似但未达合并阈值 → 去重候选边，权重=相似度）+ before（同 label 实体跨记忆按时间排序相邻连边，时间演化链）
+- **新工具**：memory_graph_path（跨类型 BFS 最短路径）/ link / unlink / node（节点详情+邻域）
+- edges 表 CHECK 约束本就含全部 8 型（mentions/partOf/similarTo/causes/solves/before/supports/contradicts）——schema 零改动，纯建边逻辑落地
+- test-phase3 扩至 16 项，三套测试共 50 项全过
+
+## v0.5.1 — 图谱实体过滤 + 记忆库瘦身
+
+- **实体过滤（治假多）**：`GRAPH_STOP_WORDS` 停用词表（英文虚词 + 中文 bigram 泛词 + LLM 输出泛词，140+ 词）——关键词 ≠ 实体，泛词不成节点；graphLink 过滤后 <2 实体不建图
+- **ep 快照不建图**：只有语义记忆（sm）进知识图谱，ep 过程快照只留文本不建节点/边
+- **修复 list() 忽略 layer 参数**（session-start 预热取 sm 实际取全部——潜伏 bug）
+- **生产库清理**（备份后执行）：60 → 23 条记忆（删 21 ep 快照 + 16 legacy 冗余，保留 23 条 sm 精炼 + 用户原始需求 mem-7582b496）；105 → 79 节点（删 11 泛词节点）；236 → 155 边；VACUUM 瘦身
+- test-phase3 扩至 17 项（含停用词过滤专项），三套测试共 51 项全过
+
+## v0.6.0-期1 — 真 embedding（remote 落地启动）
+
+- **决策已定 + 实测通过**：硅基流动 https://api.siliconflow.cn/v1；嵌入 Qwen/Qwen3-VL-Embedding-8B（**4096 维**）；重排 Qwen/Qwen3-VL-Reranker-8B（排序质量实测正确）；密钥进凭据文件（MEMORY_EMBEDDING_API_KEY / MEMORY_RERANK_API_KEY）
+- **期 1 交付 lib/embedder.js**（Embedder/Reranker seam）：RuleEmbedder（兜底）+ RemoteEmbedder（批量 ≤32/LRU 缓存/超时/维度自学习）+ RemoteReranker + createEmbeddingServices 降级链（onnx→remote→rule）
+- 设计文档：docs/embedding-rerank-design.md（含图谱×向量四结合点：节点归一化/similarTo 余弦/边权重/图内语义检索）
+- test-embedder.mjs 7 项全过（mock 批量/缓存/降级链 + 真实 API 4096 维验证）
+
+## v0.6.0-期2 — store 真嵌入接入 + 图谱重建 + 自检入口
+
+- **store.js async 化**：add/update/search/rollback 改 async（嵌入在事务外，不持写锁）；embedder 注入 + embedTexts 统一入口 + reembedMissing 批量补写；维度迁移加保护（无 embedder 不重建，防误清生产库向量）
+- **index.js 接线**：apply async 初始化 embedder/reranker（密钥凭据文件读取）；settings schema 加 embedding/reranker 段（默认硅基流动 + Qwen3-VL 系列）；新增 memory_reembed 工具；全调用点 await 化
+- **生产库迁移**：vec0 256 → 4096 维，28 条记忆重嵌入
+- **图谱重建**（rebuild-graph.mjs 运维脚本，真嵌入归一化）：节点大小写归一化（label 向量余弦 0.9 复用）+ node_memories 多对多表 + 语义 similarTo（116 条，权重=余弦）+ before 时间链（32 条）；新增 linkMemories 记忆级单边（修复边爆炸 6237 → 812）
+- **测试入口 test-record.mjs**：端到端记录质量自检（8/8 通过，语义查询命中验证；--live 生产库只读）
+- 四套测试 58 项全过（async 化零回归）；已同步部署，需重启 dsh web
+- 期 2 待做：store.js 注入 embedder + add/update/search/rollback async 化 + vec0 重建 4096 维 + 后台重嵌入迁移 + GUI 区块
+
+## 里程碑：compaction-smart（2026-08-15 立项）
+
+> 里程碑文档：[`D:\AItool\dsh-work\compaction-smart-proposal.md`](D:\AItool\dsh-work\compaction-smart-proposal.md)（502 行，六维度设计）。
+
+六维度：① 内容感知分层价值判定（ValueClass）② **压缩 = 记忆转移闭环**（核心差异化：先进库再消失，与 dsh-memory 咬合）③ 结构化摘要（SummaryDocument schema）④ 渐进式多级压缩 ⑤ 自适应阈值（成本-收益平衡）⑥ 压缩世界线（非销毁、可展开）。
+
+- 集成设计文档：[`docs/compaction-smart-integration.md`](compaction-smart-integration.md)（已产出：内部模块 lib/compactor.js 决策 + 三张新表 DDL + 转移协议落地 + 工具面草案 + 四期路线图）
+- 前置依赖：ctx.memory 价值信号表、8 型边（`summarizes` 等）——与阶段三交叉
+
 ## 下一步（方案已备）
 
-- 阶段三：真 embedding（onnx/remote seam）、8 型边全量、Leiden 聚类、世界线 rollback 工具、深度管家子代理
-- compaction-smart 实现（依赖 ctx.memory 的价值信号表）
+- 阶段三（进行中，顺序已定）：① 世界线 rollback 工具 ✅ → ② 8 型边全量 ✅（causes/solves/supports/contradicts 四型自动建边需 LLM 判断，留待 refiner 增强/管家子代理）→ ③ Leiden 聚类 + 增量 → ④ 真 embedding（onnx/remote）→ ⑤ 深度管家子代理 → ⑥ 规模/高级按需（KuzuDB/LanceDB、retriever 重排、skill 注册、画像预热、乐观锁）
+
+## v0.6.0-GUI — Web 记忆图谱视图（Obsidian 风格力导向 + 侧边栏入口）
+
+- **数据通道**：`/dsh-memory/graph` HTTP 路由（`ctx.inject(['webServer'], …)` + `webServer.register`，dsh-market 同款机制）——返回**记忆级图谱快照**（一记忆一节点投影：nodes=sm 记忆 + theme、edges=similarTo/before 映射记忆对、themes 列表）
+- **渲染演进**：SVG 主题环形（初版）→ **Obsidian 风格力导向 Canvas**（终版）：
+  - 自写物理模拟：斥力（截断 2.2k + 软化核心 22px + 限幅）+ 度感知弹簧 + 中心引力 + 阻尼；力随 alpha 缩放（d3-force 式）
+  - 拖节点（拖动期间爬行模式：强阻尼 + 斥力减半——邻居平滑跟随不抖动）、拖空白平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击看详情
+  - **fit-to-view**：模拟收敛后自动缩放居中到全部节点；初始 alpha 0.7 温和展开
+  - 点阵背景（Obsidian 定位网格）、节点尺寸按度数、标签缩放自适应隐藏
+  - 性能：单 Canvas 每帧整绘、alpha 冷却停帧（静止零 CPU）、选中/hover 走 ref 零 React 重渲染
+- **入口演进**：顶部 conversation.view tab → **主界面可收起侧边栏底部入口**（`sidebar.footer.action`，任务看板同槽）——点开全视口面板（标题栏+关闭按钮），无底部输入框
+- **过程中修的 bug**：DetailPanel 的 nodeById 解构遗漏（点击白屏）、fit-to-view 拖动中误触发（乱跳）、alpha 冷却循环停止不重绘（拖 1 秒冻结）、斥力核心 5px 爆炸（邻居剧烈抖动）
+- 构建 lib/client.js（45KB）+ 部署同步；测试全过
+
+## v0.6.0-主题聚类 — 记忆自动归类
+
+- **记忆级主题聚类**：4096 维向量凝聚聚类（阈值 0.78）——30 条记忆 → 12 个主题（compaction/图谱工具链/嵌入选型等，语义归组准确）；memories 表加 theme 列（旧库自动补列）；启动重嵌入后自动聚类；memory_list 输出带主题标签
+- **图谱边审计**：similarTo 116 条合理（top 0.91 近重复对）；before 32 条经 node_memories 正确映射后 32/32 时间方向全对；mentions 92.2% 同记忆共现合理；linkBefore 改为记忆级时间链（归一化节点时间错位修复）
+- 图社区（label propagation）在密集图上收敛成巨社区——记忆级主题聚类是更合适的归类机制（Leiden 标记暂缓）
+
+## v0.6.0-热修复2 — 凭据读取根因 + 防崩溃加固（2026-08-15）
+
+### 修复 3：readCredential 正则转义丢失（remote 恒降级 rule 的根因）
+- **现象**：启动日志 `embedder: rule（dim 256）`——远程嵌入永远初始化失败，生产库被误迁移回 256 维
+- **根因**：`readCredential` 的字符串正则 `new RegExp('^' + name + ':\s*(\S+)', 'm')` 经多层传输后反斜杠丢失（\s → s、\S → S），正则失效 → apiKey 恒 undefined
+- **修复**：改用零反斜杠的逐行解析（replaceAll(CRLF) + split(LF) + startsWith + slice），凭据读取不再依赖正则转义
+
+### 加固：防崩溃防护（用户要求——插件出问题不能让 dsh 崩，agent 才能回来修）
+- **apply() 整体隔离**：settings 注册失败 → 组合层配置兜底（不再 throw）；embedder/store 初始化失败 → 记忆功能停用但 dsh 正常运行（不再 fatal）
+- **registerTools 逐工具隔离**：新增 safeRegister 包装——16 个工具逐一注册，单个 schema 非法只跳过该工具（正是热修复 1 的教训：一个 schema 非法曾炸整个插件树）
+- **写入管线隔离**：turn/end 分支整体 try/catch——upsertMemory/refiner 异常不再变成 unhandled rejection
+- **向量写入三处保护**（热修复 1 已做）：add/update/rollback 的 vecInsert 失败仅 warn 跳过，记忆本体照常 COMMIT，缺失向量由 reembedMissing 补写
+- 验证：五套测试 66 项全过；已同步部署
+
+## v0.6.0-热修复 — schema 校验 + 向量写入加固（2026-08-15）
+
+> 用户反馈 dsh web profile 启动即崩，两类错误并存：
+
+### 修复 1：memory_stats 输出 schema 违反编译器严格校验
+- **现象**：`JsonSchemaError: unsupported JSON schema: schema.properties.stats.properties.layers.additionalProperties must be explicitly true or false`，插件树加载失败（registerTools 阶段），dsh 退出码 1
+- **根因**：`lib/index.js` memory_stats 工具 output schema 中 `layers` 对象节点未声明 `additionalProperties`，DSH 核心 tools 编译器（deepseek-harness/packages/core/tools）要求每个 object 节点显式 true/false
+- **修复**：`layers` 补齐 `additionalProperties: false` 及 `properties: { ep: integer, sm: integer }`（与 `store.stats()` 实际返回结构一致）；全文件 24 处 object schema 复查无其他遗漏
+
+### 修复 2：向量维度不匹配导致记忆写入致命失败
+- **现象**：`Error: Dimension mismatch for inserted vector for the "embedding" column. Expected 4096 dimensions but received 256.`，`MemoryStore.add` 抛出后整个事务回滚、dsh 启动 fatal
+- **根因**：`lib/store.js` 中 `vecInsert.run` 在事务内裸调用，embedding 维度与 vec0 表不匹配（rule 256 维 vs 旧 4096 维表，或 remote 切换后维度变化）时异常冒泡，阻断记忆落库与启动
+- **修复**：`add()`/`update()`/`rollback()` 三处 `vecInsert.run` 包 try/catch——向量写入失败仅 `console.warn` 跳过，记忆本体照常 COMMIT，缺失向量由 `reembedMissing` 补写；`reembedMissing` 自身补偿路径保持原语义
+- **配套**：构造期维度迁移逻辑（4096→256 重建空表 + 重嵌入）不变，已自动处理旧表
+
+### 部署与验证
+- 修复文件：`lib/index.js`、`lib/store.js`；同步部署到 `C:\Users\28643\.dsh\profiles\web\node_modules\dsh-memory\lib\`（覆盖前原文件备份于同目录 `lib_backup_20250416/`）
+- 验证：`node --check` 语法通过；`node test-record.mjs` 临时库端到端 8/8 通过（写入→向量→语义检索闭环）；`node --import tsx/esm apps/cli/src/bin.ts --profile web` 启动成功——`[dsh-memory] embedder: rule（dim 256）`，无 UNSUPPORTED_SCHEMA、无 fatal load failure，web 服务就绪
+- 建议：下次发版将 package.json 版本由 0.4.1 提升（本次未改版本号，避免连带依赖变更；schema 修复属兼容性变更，不破坏既有数据）
+
+## v0.6.0-运维 — 自愈启动 + 生态清理 + 调研
+
+- **start-dsh.ps1 自愈 preflight**（保证 DSH 更新后启动脚本仍可用）：① pnpm 版本动态读 package.json 的 packageManager；② package.json+pnpm-lock 哈希变化或 node_modules 缺失 → 自动 pnpm install --frozen-lockfile；③ apiproxy 白名单 memory 命名空间被 git 更新覆盖 → 自动补丁（副本演练验证通过）。经验：run_code/edit 传输层吞字符串反斜杠（路径一律正斜杠）、PowerShell -replace 拼接要先算 replacement 变量
+- **移除 tdai-memory**：8/16 凌晨被另一会话批量安装（非用户本意），已从 cordis.patch.yml 删除 + 插件文件清除（原生模块残留待重启后清）
+- **PreText 调研**（docs/pretext-evaluation.md）：@chenglou/pretext（无 DOM 文本测量/布局引擎，MIT）——当前图谱场景 ROI 低暂不集成，列为「节点气泡多行标签 / Canvas 详情卡片 / 千级标签」的备选方案（esbuild 打包 +102KB 实测通过）
+
+## 下一步（方案已备，按优先级）
+
+- ① reranker 接入 search（RRF 融合后精排——RemoteReranker 已实现待接线）
+- ② GUI 嵌入/重排设置区块（settings schema 已备）
+- ③ 图模型简化：视图层已做「一记忆一节点」投影，store 实体图（node_memories）是否简化待定
+- ④ 管家子代理（全局去重/老化清扫/画像蒸馏）
+- ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）
+- ⑥ Leiden 聚类暂缓（被记忆级主题聚类替代）；规模/高级按需（KuzuDB/LanceDB 等）
+- ⑦ 图谱力导向参数进 settings（弹簧/阻尼/斥力可调，不再改代码调手感）

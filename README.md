@@ -32,6 +32,12 @@ memory_list              浏览
 memory_stats             统计（含向量/图谱状态）
 memory_graph_neighbors   图谱邻域（k-hop 扩散）
 memory_graph_communities 社区检测/查看
+memory_graph_path        图谱最短路径（节点序列+边类型链）
+memory_graph_link        手动连边（8 型语义关系）
+memory_graph_unlink      断边（历史保留）
+memory_graph_node        节点详情 + 邻域
+memory_versions          世界线版本链（回滚前查看）
+memory_rollback          回滚到历史版本（时间旅行）
 ```
 
 ## 🏗 架构
@@ -47,6 +53,8 @@ DSH 运行时 ──session/event──▶ 写入侧 ──沉淀/去重──�
 📄 交互式架构图：**[`docs/architecture.html`](docs/architecture.html)**（浏览器打开，或 DSH 右侧预览面板直接渲染）
 
 📚 详细设计：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md)
+
+🏔 里程碑（compaction-smart，502 行六维度压缩方案）：[`D:\AItool\dsh-work\compaction-smart-proposal.md`](D:\AItool\dsh-work\compaction-smart-proposal.md)
 
 ## 📦 安装
 
@@ -123,7 +131,11 @@ memory:
 
 ```bash
 node test.mjs         # 阶段一回归（16 项）
-node test-phase2.mjs  # 阶段二专项（14 项：向量/图遍历/遗忘/merge-purge）
+node test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
+node test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
+node test-embedder.mjs # 嵌入/重排 seam 单测（7 项：rule/remote/缓存/降级链/真实 API）
+node test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
+node rebuild-graph.mjs # 图谱重建运维脚本（真嵌入归一化重建 + 语义边）
 ```
 
 ## 📄 License
