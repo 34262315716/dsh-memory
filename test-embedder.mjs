@@ -38,7 +38,7 @@ check('降级链落到 rule', svc.embedder.name === 'rule' && svc.warnings.lengt
 const mockRerankFetch = async (url, opts) => ({ ok: true, json: async () => ({ results: [{ index: 1, relevance_score: 0.9 }, { index: 0, relevance_score: 0.1 }] }), text: async () => '' })
 const reranker = new RemoteReranker({ baseUrl: 'https://mock', apiKey: 'x', model: 'r', fetchImpl: mockRerankFetch })
 const rr = await reranker.rerank('q', ['a', 'b'])
-check('reranker 返回排序结果', rr[0].index === 1 && rr[0].score === 0.9)
+check('reranker 返回全部 doc 的分数（按 docs 顺序）', rr.length === 2 && rr[0].score === 0.1 && rr[1].score === 0.9)
 
 // 5. 真实硅基流动 API（凭据文件读密钥）
 const cred = readFileSync(join(homedir(), '.dsh', '.credentials.yaml'), 'utf8')
@@ -64,8 +64,11 @@ const c1 = await rrCached.rerank('q1', ['docA', 'docB'])
 const c2 = await rrCached.rerank('q1', ['docA', 'docB'])   // 全部缓存命中
 check('rerank 结果按 index 返回', c1[0].index === 0 && c1[1].index === 1)
 check('rerank LRU 缓存命中（第二次零请求）', rrCalls === 1 && c2[1].score === c1[1].score)
-const c3 = await rrCached.rerank('q1', ['docC'])            // 新 doc 只发新请求
-check('rerank 部分缓存命中', rrCalls === 2 && c3[0].score === 0.5)
+await rrCached.rerank('q1', ['docB'])                       // 预热缓存 B
+const c3 = await rrCached.rerank('q1', ['docA', 'docB', 'docC'])   // 部分命中：B 缓存，A/C 请求
+check('rerank 部分缓存命中：返回全部 doc（不丢缓存项）', c3.length === 3 && c3[1].score === c1[1].score && c3[2].score === 0.5)
+const c4 = await rrCached.rerank('q1', ['docC'])            // 新 doc 单条
+check('rerank 新 doc 请求', c4.length === 1 && c4[0].score === 0.5)
 
 // 7. store 层 rerank 集成：RRF 融合后精排（mock reranker 反转顺序）
 class MockReranker {

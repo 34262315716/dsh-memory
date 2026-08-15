@@ -328,7 +328,7 @@ function MemorySettingsSection({ scope, api, llmScope }) {
         const next = { ...reranker }
         for (const [f] of RERANKER_FIELDS) {
           const v = drafts[`reranker.${f}`]
-          if (v !== undefined) next[f] = f === 'enabled' ? v : (NUMERIC_SUB.has(f) ? Number(v) : String(v))
+          if (v !== undefined) next[f] = NUMERIC_SUB.has(f) ? Number(v) : String(v)
         }
         await scope.set('reranker', next)
       }
@@ -1055,7 +1055,7 @@ const DetailPanel = memo(function DetailPanel({ selected, data }) {
       </p>
       <p style={{ fontSize: 12, margin: "0 0 10px" }}>
         {(selected.versions ?? 1) > 1
-          ? <span style={{ color: "#ffd54f" }}>◉ 更新过 {(selected.versions ?? 1) - 1} 次（世界线 {(selected.versions ?? 1)} 段）</span>
+          ? <span style={{ color: "#ffd54f" }}>◉ 更新过 {(selected.versions ?? 1) - 1} 次（世界线保留最近 {(selected.versions ?? 1)} 段）</span>
           : <span style={{ color: "#777" }}>○ 未更新过（单版本）</span>}
         <span style={{ color: "#888" }}> · 创建于 {agoText(selected.createdAt)}</span>
         {selected.updatedAt && selected.updatedAt !== selected.createdAt
@@ -1106,7 +1106,7 @@ function MemoryGraphView({ scope }) {
     spring: Number(gv.spring) || 0.13,
     repulsion: Number(gv.repulsion) || 1,
     damping: Number(gv.damping) || 0.3,
-    gravity: Number(gv.gravity) ?? 0.005,
+    gravity: Number(gv.gravity) || 0.005,   // || 而非 ??：Number(undefined)=NaN，NaN??x 仍是 NaN 会击穿力导向
   }), [gv.spring, gv.repulsion, gv.damping, gv.gravity])
 
   const load = useCallback(() => {
@@ -1137,10 +1137,12 @@ function MemoryGraphView({ scope }) {
       return (ts ?? 0) >= now - days * 24 * 3600 * 1000
     }
     const ids = new Set(data.nodes.filter((n) => inWindow(n.createdAt)).map((n) => n.id))
+    const nodes = data.nodes.filter((n) => ids.has(n.id))
     return {
       ...data,
-      nodes: data.nodes.filter((n) => ids.has(n.id)),
+      nodes,
       edges: data.edges.filter((e) => ids.has(e.from) && ids.has(e.to)),
+      themes: [...new Set(nodes.map((n) => n.theme).filter(Boolean))],   // 筛选后主题数口径一致
     }
   }, [data, ageWindow])
   const updatedCount = (filtered?.nodes ?? []).filter((n) => (n.versions ?? 1) > 1).length

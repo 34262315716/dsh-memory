@@ -70,6 +70,47 @@ check('写入量达到 → 触发', mkState(20, Date.now(), Date.now()))
 check('时间超期 → 触发（即使写入量小）', mkState(1, Date.now() - 25 * 3600 * 1000, Date.now()))
 check('重启后 lastAt 缺失（0）→ 触发', mkState(0, 0, Date.now()))
 
+console.log('== 8. 访问加成：search 命中记 last_access + strength（遗忘曲线语义） ==')
+{
+  const dir3 = mkdtempSync(join(tmpdir(), 'dsh-memory-hk2-'))
+  const s = new MemoryStore(join(dir3, 't.db'), { embedder: new RuleEmbedder(256) })
+  const mid = await s.add({ layer: 'sm', scope: 'test', content: '访问测试：SQLite 检索专题', keywords: ['sqlite', '检索'] })
+  // 制造"创建很久但未被访问"的假象：strength 0.5、last_access 30 天前
+  s.db.prepare('UPDATE memories SET created_at = ?, last_access = ?, strength = 0.5 WHERE id = ?').run(Date.now() - 30 * 24 * 3600 * 1000, Date.now() - 30 * 24 * 3600 * 1000, mid)
+  await s.search('SQLite 检索', { scope: 'test', limit: 3, minScore: 0 })
+  const after = s.db.prepare('SELECT last_access, strength FROM memories WHERE id = ?').get(mid)
+  const fresh = Date.now() - after.last_access < 5000
+  check('search 命中后 last_access 刷新为现在', fresh)
+  check('search 命中后 strength 加成（0.5 → 0.55）', Math.abs(after.strength - 0.55) < 0.01)
+  // 未命中的记忆不 touch：无关记忆仅向量路 rank2（~0.016 < 0.02）被过滤 → last_access 保持 30 天前
+  const mid2 = await s.add({ layer: 'sm', scope: 'test', content: '无关记忆：今天天气很好出门散步', keywords: ['天气'] })
+  s.db.prepare('UPDATE memories SET last_access = ? WHERE id = ?').run(Date.now() - 30 * 24 * 3600 * 1000, mid2)
+  await s.search('SQLite 检索专题', { scope: 'test', limit: 3, minScore: 0.02 })
+  const untouched = s.db.prepare('SELECT last_access FROM memories WHERE id = ?').get(mid2)
+  check('未命中记忆不 touch', Date.now() - untouched.last_access > 25 * 24 * 3600 * 1000)
+  s.close(); rmSync(dir3, { recursive: true, force: true })
+}
+
+console.log('== 9. 迁移幂等：重开 store 不重复插入 ==')
+{
+  const dir4 = mkdtempSync(join(tmpdir(), 'dsh-memory-hk3-'))
+  const db4 = join(dir4, 't.db')
+  const s1 = new MemoryStore(db4, {})
+  const a = await s1.add({ layer: 'sm', scope: 'test', content: '幂等甲：向量库对比', keywords: ['向量'] })
+  const b = await s1.add({ layer: 'sm', scope: 'test', content: '幂等乙：向量库对比', keywords: ['向量'] })
+  s1.db.prepare('INSERT INTO nodes (id, kind, label, memory_id, created_at) VALUES (?, ?, ?, ?, ?)').run('n-idem-1', 'entity', '向量', a, Date.now())
+  s1.db.prepare('INSERT INTO nodes (id, kind, label, memory_id, created_at) VALUES (?, ?, ?, ?, ?)').run('n-idem-2', 'entity', '向量', b, Date.now())
+  s1.db.prepare('INSERT INTO node_memories (node_id, memory_id) VALUES (?, ?)').run('n-idem-1', a)
+  s1.db.prepare('INSERT INTO node_memories (node_id, memory_id) VALUES (?, ?)').run('n-idem-2', b)
+  s1.db.prepare("INSERT INTO edges (id, type, from_node, to_node, valid_from, weight) VALUES (?, 'similarTo', ?, ?, ?, 0.8)").run('e-idem', 'n-idem-1', 'n-idem-2', Date.now())
+  s1.close()
+  const s2 = new MemoryStore(db4, {})   // 第一次迁移
+  const s3 = new MemoryStore(db4, {})   // 第二次打开：增量迁移不重复
+  const links = s2.db.prepare("SELECT COUNT(*) AS c FROM memory_links WHERE type = 'similarTo'").get().c
+  check('迁移一次且重开不重复插入', links === 1)
+  s2.close(); s3.close(); rmSync(dir4, { recursive: true, force: true })
+}
+
 store.close()
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

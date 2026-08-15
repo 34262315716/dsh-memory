@@ -1,7 +1,7 @@
 {
   "name": "dsh-memory",
   "description": "Advanced auto-memory plugin for DSH: layered memory + SQLite storage + graph skeleton + time dimension (worldline) + feature flags",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

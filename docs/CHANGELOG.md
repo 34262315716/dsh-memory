@@ -281,6 +281,29 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 - 六套测试 93 项全过；client bundle 重建（67KB）；版本号 0.8.2 → 0.8.3
 - 用户层无 injectMinScore 覆盖，默认值改动直接生效
 
+## v0.8.4 — 子代理代码审查修复批（2026-08-16）
+
+用户安排独立子代理对 v0.7.0~v0.8.3 全部改动做深度审查（5 套测试自跑 86 项全绿、最小脚本复现验证），修复审查发现的全部 P1/P2 问题：
+
+### P1 修复
+- **rerank 部分缓存命中丢 doc**（embedder.js）：缓存命中与 API 结果合并时，未缓存 doc 的输出掩盖了缓存 doc——部分命中返回条数 < 输入。统一按 docs 原始顺序返回全部（缓存回填 + API 回填 + 未覆盖补 0），store 融合不再出现"缓存命中项不参与重排"的排序标准不一致。顺带严格 LRU（读取刷新位置）
+- **link() 语义修正**（store.js）：docstring 明确"返回 1 = 边已活跃（新建或重新激活）"；exists 判定合并为单条 COUNT（原 4 次查询）
+
+### P2 修复
+- **touchMemory 从未被调用**（store.js）：search() 命中后批量 touch（last_access 刷新 + strength ×1.1 加成，上限 5）——遗忘曲线/老化报告语义落地：last_access 此前冻结在创建时间，老化报告实为"创建年龄"，热门旧记忆会被误报
+- **管家计数器按轮次而非沉淀条数**（index.js）：maybeHousekeeping 抽为独立函数，仅在真实沉淀（add/update 成功）后计数；inFlight 防并发双巡检；refiner 三条写入路径全部接入
+- **迁移早退缺陷**（store.js）：#migrateMemoryLinks 由"行数 n>0 早退"改为**增量迁移**（每条检查 memory_links 同三元组，已有跳过）——部分迁移/后续旧式边写入也能补迁，重复启动零重复
+- **physics.gravity NaN 击穿**（client）：`?? 0.005` 改 `|| 0.005`——`Number(undefined)=NaN`，`NaN ?? x` 仍为 NaN，力导向坐标全 NaN 图谱渲染崩溃（其余三项本就是 `||`）
+- **时间筛选后 themes 口径**（client）：filtered 基于筛选后 nodes 重算主题数
+
+### P3 落实
+- DetailPanel 版本文案注明"世界线保留最近 N 段"（滚动裁减上限）；reranker 保存死分支删除
+
+### 测试与验证
+- test-embedder 扩至 17 项（部分缓存命中返回全部 doc 回归 + 第 4 项断言对齐新语义）
+- test-housekeeping 扩至 19 项（search touch 生效/未命中不 touch/迁移幂等重开不重复）
+- 六套测试 99 项全过；client bundle 重建（67KB）；版本号 0.8.3 → 0.8.4
+
 ## 下一步（方案已备，按优先级）
 
 - ① reranker 接入 search ✅（v0.7.0）→ 待办：真实 API 端到端 A/B（开启重排对比注入命中率）
