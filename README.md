@@ -162,7 +162,9 @@ node test.mjs         # 阶段一回归（16 项）
 node test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
 node test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
 node test-embedder.mjs # 嵌入/重排 seam 单测（14 项：rule/remote/缓存/降级链/rerank 融合与缓存/向量独有命中/真实 API）
-node test-housekeeping.mjs # 管家专项（15 项：去重扫描/老化报告/自动合并/meta/触发条件）
+node test-housekeeping.mjs # 管家专项（19 项：去重扫描/老化报告/自动合并/meta/触发条件/touch/迁移幂等）
+node test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
+                          # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行
 node test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
 node rebuild-graph.mjs # 图谱重建运维脚本（真嵌入归一化重建 + 语义边）
 ```
