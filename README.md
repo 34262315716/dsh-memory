@@ -12,8 +12,8 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触�
 | **自动沉淀** | `turn/end` 写入 + 价值门过滤 + Jaccard 去重合并（相似记忆更新而非新建） |
 | **分层记忆** | `ep`（情景，turn 快照）/ `sm`（语义，长期知识），带 scope 隔离 |
 | **时间维度（世界线）** 🐛 | 更新追加版本，旧版本保留但隐藏（不参与检索/注入）；`maxVersions` 滚动裁旧 + 回滚链 |
-| **向量语义检索** | `sqlite-vec` KNN 余弦 + FTS5 BM25 + 关键词三路 **RRF 融合**；扩展加载失败优雅降级 |
-| **记忆图谱** | 实体节点 + 边（共现/因果/时间演化…）、k-hop 邻域扩散、BFS 最短路径、社区自动聚类 |
+| **向量语义检索** | `sqlite-vec` KNN 余弦 + FTS5 BM25 + 关键词三路 **RRF 融合**；扩展加载失败优雅降级；**reranker 后置精排**（RRF 候选 → 融合分 `w×RRF+(1-w)×rerank`，失败降级 RRF 零损失） |
+| **记忆图谱** | 实体节点 + 边（共现/因果/时间演化…）、k-hop 邻域扩散、BFS 最短路径、社区自动聚类；**力导向参数（弹簧/斥力/阻尼/引力）settings 可调、live 生效** |
 | **LLM 蒸馏（refiner）** | 独立模型把高噪声轮次提取为自包含结论（决策/偏好/教训分类）；失败自动降级规则路径 |
 | **遗忘曲线** | 24h 后指数衰减 + 访问加成，惰性批量执行 |
 | **会话预热** | `agent/session-start` 注入最近语义记忆（用户画像/项目背景） |
@@ -123,6 +123,26 @@ memory:
     model: deepseek-v4-flash
     apiKeyEnv: MEMORY_REFINER_API_KEY  # 独立密钥槽（供应商未声明 apiKeyEnv 时生效）
     maxTokens: 800
+  embedding:
+    provider: remote        # rule（离线哈希兜底）| remote（OpenAI 兼容 API）| onnx（预留）
+    model: Qwen/Qwen3-VL-Embedding-8B  # 4096 维（硅基流动实测）
+    baseUrl: https://api.siliconflow.cn/v1
+    apiKeyEnv: MEMORY_EMBEDDING_API_KEY
+    cacheSize: 1024
+  reranker:
+    enabled: false          # RRF 融合后精排（需配置密钥；失败降级 RRF 顺序）
+    provider: remote
+    model: Qwen/Qwen3-VL-Reranker-8B
+    baseUrl: ''             # 留空 = 跟随嵌入端点
+    apiKeyEnv: MEMORY_RERANK_API_KEY
+    topK: 20                # 精排候选数
+    minCandidates: 3        # 候选不足不重排
+    rrfWeight: 0.7          # final = w×RRF + (1-w)×重排分
+  graphView:
+    spring: 0.13            # 图谱力导向：弹簧强度
+    repulsion: 1            # 斥力倍率
+    damping: 0.3            # 速度阻尼
+    gravity: 0.005          # 中心引力
 ```
 
 **密钥自动跟随**：选中供应商后，GUI 密钥输入的目标引用自动切换为该供应商声明的 `apiKeyEnv`；密钥本体写入 `~/.dsh/.credentials.yaml`（私有文件），不进设置文档、不进记忆库、界面不回显。
@@ -133,7 +153,7 @@ memory:
 node test.mjs         # 阶段一回归（16 项）
 node test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
 node test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
-node test-embedder.mjs # 嵌入/重排 seam 单测（7 项：rule/remote/缓存/降级链/真实 API）
+node test-embedder.mjs # 嵌入/重排 seam 单测（14 项：rule/remote/缓存/降级链/rerank 融合与缓存/向量独有命中/真实 API）
 node test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
 node rebuild-graph.mjs # 图谱重建运维脚本（真嵌入归一化重建 + 语义边）
 ```

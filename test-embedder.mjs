@@ -1,6 +1,7 @@
 import { RuleEmbedder, RemoteEmbedder, RemoteReranker, createEmbeddingServices, cosine } from './lib/embedder.js'
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { MemoryStore } from './lib/store.js'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 let pass = 0, fail = 0
@@ -49,6 +50,81 @@ if (key) {
     check('真实 API：4096 维 + 相似文本余弦 > 无关', rv[0].length === 4096 && cosine(rv[0], rv[0]) > 0.99)
     check('真实 API：dim 自动学习', real.dim === 4096)
   } catch (e) { fail++; console.log('  ❌ 真实 API: ' + e.message.slice(0, 100)) }
+}
+
+// 6. RemoteReranker LRU 缓存：同 (query, doc) 命中缓存，不再发请求
+let rrCalls = 0
+const cacheFetch = async (url, opts) => {
+  rrCalls++
+  const body = JSON.parse(opts.body)
+  return { ok: true, json: async () => ({ results: body.documents.map((_, i) => ({ index: i, relevance_score: 0.5 + i * 0.1 })) }), text: async () => '' }
+}
+const rrCached = new RemoteReranker({ baseUrl: 'https://mock', apiKey: 'x', model: 'r', fetchImpl: cacheFetch })
+const c1 = await rrCached.rerank('q1', ['docA', 'docB'])
+const c2 = await rrCached.rerank('q1', ['docA', 'docB'])   // 全部缓存命中
+check('rerank 结果按 index 返回', c1[0].index === 0 && c1[1].index === 1)
+check('rerank LRU 缓存命中（第二次零请求）', rrCalls === 1 && c2[1].score === c1[1].score)
+const c3 = await rrCached.rerank('q1', ['docC'])            // 新 doc 只发新请求
+check('rerank 部分缓存命中', rrCalls === 2 && c3[0].score === 0.5)
+
+// 7. store 层 rerank 集成：RRF 融合后精排（mock reranker 反转顺序）
+class MockReranker {
+  constructor(scores) { this.name = 'mock'; this.calls = 0; this.scores = scores ?? [] }
+  async rerank(query, docs) {
+    this.calls++
+    return docs.map((_, i) => ({ index: i, score: this.scores[i] ?? 0.1 }))
+  }
+}
+const mkStore = async (reranker, rerankCfg) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-mem-test-'))
+  const store = new MemoryStore(join(dir, 't.db'), {
+    embedder: new RuleEmbedder(256),
+    reranker,
+    rerankCfg: rerankCfg ?? { topK: 20, minCandidates: 3, rrfWeight: 0.7 },
+  })
+  for (const [i, text] of ['记忆甲 rrf 主题', '记忆乙 rrf 主题', '记忆丙 rrf 主题'].entries()) {
+    await store.add({ layer: 'sm', type: 'note', scope: 'test', content: text, keywords: ['rrf', '主题', '记忆' + '甲乙丙'[i]] })
+  }
+  return { store, dir }
+}
+{
+  const mock = new MockReranker([0.1, 0.2, 0.99])
+  const { store, dir } = await mkStore(mock)
+  const hits = await store.search('rrf 主题', { scope: 'test', limit: 3, minScore: 0 })
+  // 三条 kw 分相同 → RRF 后按 id 序；rerank 给丙 0.99 → 融合后丙应第一
+  check('rerank 融合：高分文档升至第一', hits.length === 3 && hits[0].content.includes('丙') && mock.calls === 1)
+  store.close(); rmSync(dir, { recursive: true, force: true })
+}
+{
+  // reranker 失败 → 降级 RRF 顺序，不抛异常
+  const failing = { name: 'mock', async rerank() { throw new Error('api down') } }
+  const { store, dir } = await mkStore(failing)
+  let threw = false
+  let hits = []
+  try { hits = await store.search('rrf 主题', { scope: 'test', limit: 3, minScore: 0 }) }
+  catch { threw = true }
+  check('reranker 失败降级 RRF（无异常且结果非空）', !threw && hits.length === 3)
+  store.close(); rmSync(dir, { recursive: true, force: true })
+}
+{
+  // 候选不足（2 < minCandidates 3）→ 不调用 reranker
+  const mock = new MockReranker()
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-mem-test-'))
+  const store = new MemoryStore(join(dir, 't.db'), { embedder: new RuleEmbedder(256), reranker: mock, rerankCfg: { topK: 20, minCandidates: 3, rrfWeight: 0.7 } })
+  await store.add({ layer: 'sm', type: 'note', scope: 'test', content: '只有两条 rrf', keywords: ['rrf'] })
+  await store.add({ layer: 'sm', type: 'note', scope: 'test', content: '也是两条 rrf', keywords: ['rrf'] })
+  const hits = await store.search('rrf', { scope: 'test', limit: 3, minScore: 0 })
+  check('候选不足不触发 rerank', hits.length === 2 && mock.calls === 0)
+  store.close(); rmSync(dir, { recursive: true, force: true })
+}
+{
+  // 向量独有命中回归：2 字查询 FTS/关键词均不命中，只有向量路 → 结果必须非空（修复前丢失）
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-mem-test-'))
+  const store = new MemoryStore(join(dir, 't.db'), { embedder: new RuleEmbedder(256), reranker: null })
+  await store.add({ layer: 'sm', type: 'note', scope: 'test', content: '深蓝海洋的记忆内容', keywords: ['深蓝', '海洋'] })
+  const hits = await store.search('蓝海', { scope: 'test', limit: 3, minScore: 0 })
+  check('向量独有命中不再丢失', hits.length === 1)
+  store.close(); rmSync(dir, { recursive: true, force: true })
 }
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败')

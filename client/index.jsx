@@ -40,6 +40,36 @@ const REFINER_FIELDS = [
   ['apiKeyEnv', '独立密钥槽引用', '仅当选中供应商未声明 apiKeyEnv 时生效（自建供应商场景），默认 MEMORY_REFINER_API_KEY'],
 ]
 
+/** 嵌入模型字段（embedding 子对象，对应 settings schema）。 */
+const EMBEDDING_FIELDS = [
+  ['provider', '嵌入供应商', 'rule（离线哈希兜底，256 维）| remote（OpenAI 兼容 API，质量最高）| onnx（预留）'],
+  ['model', '嵌入模型', 'remote 模型名，如 Qwen/Qwen3-VL-Embedding-8B（4096 维）'],
+  ['baseUrl', 'API 端点', 'OpenAI 兼容 /v1/embeddings 端点，默认硅基流动'],
+  ['apiKeyEnv', '密钥引用名', '凭据文件键名，默认 MEMORY_EMBEDDING_API_KEY'],
+  ['cacheSize', '嵌入缓存条数', 'embed 结果 LRU 缓存（64~8192，默认 1024）'],
+]
+
+/** 重排模型字段（reranker 子对象）。 */
+const RERANKER_FIELDS = [
+  ['provider', '重排供应商', 'remote（/v1/rerank）| onnx（预留）'],
+  ['model', '重排模型', '如 Qwen/Qwen3-VL-Reranker-8B'],
+  ['baseUrl', 'API 端点', '留空 = 跟随嵌入端点'],
+  ['apiKeyEnv', '密钥引用名', '凭据文件键名，默认 MEMORY_RERANK_API_KEY'],
+  ['topK', '精排候选数', 'RRF 融合后取前 N 条重排（5~50，默认 20）'],
+  ['minCandidates', '最少候选', '候选不足不触发重排（2~20，默认 3）'],
+  ['rrfWeight', 'RRF 权重', '融合分 = w×RRF + (1-w)×重排分（0~1，默认 0.7）'],
+]
+
+/** 图谱力导向字段（graphView 子对象）。 */
+const GRAPH_VIEW_FIELDS = [
+  ['spring', '弹簧强度', '连线牵引力（0.02~0.5，默认 0.13；越大团越紧）'],
+  ['repulsion', '斥力倍率', '节点间斥力（0.2~2，默认 1；越大越松散）'],
+  ['damping', '速度阻尼', '运动衰减（0.05~0.9，默认 0.3；越大越稳但更慢收敛）'],
+  ['gravity', '中心引力', '孤立节点回中心拉力（0~0.05，默认 0.005）'],
+]
+
+const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity'])
+
 function Field({ label, hint, children }) {
   return (
     <label style={{ display: 'block', margin: '8px 0' }}>
@@ -63,6 +93,68 @@ function CheckboxRow({ label, hint, checked, onChange }) {
       <span>{label}</span>
       {hint ? <span style={{ color: '#888', fontSize: 12 }}>— {hint}</span> : null}
     </label>
+  )
+}
+
+/** 密钥输入卡片：password 写凭据文件（~/.dsh/.credentials.yaml），绝不回显；ref 为凭据键名。 */
+function KeyInput({ api, ref, hint }) {
+  const [state, setState] = useState({ checking: false, configured: false, writing: false })
+  const [draft, setDraft] = useState('')
+  const check = async () => {
+    setState((s) => ({ ...s, checking: true }))
+    try {
+      const r = await api.credentials.describe({ refs: [ref] })
+      setState((s) => ({
+        ...s,
+        configured: Boolean(r?.result?.ok && r.result.value?.credentials?.[ref]?.configured),
+        checking: false,
+      }))
+    } catch {
+      setState((s) => ({ ...s, checking: false }))
+    }
+  }
+  useEffect(() => { void check() }, [ref])
+  const save = async () => {
+    if (!draft) return
+    setState((s) => ({ ...s, writing: true }))
+    try {
+      await api.credentials.set({ ref, value: draft })
+      setDraft('')
+      await check()
+    } catch (err) {
+      console.warn('[dsh-memory-client] 密钥保存失败: ' + err.message)
+    } finally {
+      setState((s) => ({ ...s, writing: false }))
+    }
+  }
+  return (
+    <div style={{ marginTop: 8, padding: 10, border: '1px solid #3a3a3a', borderRadius: 8, background: '#1a1a1a' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+        <span style={{ fontWeight: 500 }}>API 密钥</span>
+        {state.checking
+          ? <span style={{ color: '#888', fontSize: 12 }}>检查中…</span>
+          : state.configured
+            ? <span style={{ color: '#4caf50', fontSize: 12 }}>● 已配置（{ref}）</span>
+            : <span style={{ color: '#e67e22', fontSize: 12 }}>○ 未配置（{ref}）</span>}
+      </div>
+      {hint ? <p style={{ color: '#888', fontSize: 12, margin: '6px 0' }}>{hint}</p> : null}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+          type="password"
+          placeholder={`粘贴密钥到 ${ref}（留空不改）`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <button
+          onClick={save}
+          disabled={!draft || state.writing}
+          style={{ padding: '4px 14px', borderRadius: 6, border: '1px solid #555', background: '#2a2a2a', color: '#eee', cursor: draft ? 'pointer' : 'default' }}
+        >
+          {state.writing ? '保存中…' : '保存密钥'}
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -100,6 +192,9 @@ function MemorySettingsSection({ scope, api, llmScope }) {
   const value = snap.value ?? {}
   const features = value.features ?? {}
   const refiner = value.refiner ?? {}
+  const embedding = value.embedding ?? {}
+  const reranker = value.reranker ?? {}
+  const graphView = value.graphView ?? {}
   const writable = snap.writable ?? false
   const status = snap.status
 
@@ -167,7 +262,13 @@ function MemorySettingsSection({ scope, api, llmScope }) {
   const setText = (group, field, text) => setDrafts((d) => ({ ...d, [`${group}.${field}`]: text }))
 
   const dirty = Object.keys(drafts).length > 0
-  const invalid = Object.entries(drafts).some(([k, v]) => !k.includes('.') && v !== '' && Number.isNaN(Number(v)))
+  // 数值字段（顶层全部 + 子对象中 NUMERIC_SUB 声明项）填了非数字 → 禁止保存
+  const invalid = Object.entries(drafts).some(([k, v]) => {
+    if (v === '') return false
+    const field = k.includes('.') ? k.split('.')[1] : k
+    const isNumeric = !k.includes('.') || NUMERIC_SUB.has(field)
+    return isNumeric && Number.isNaN(Number(v))
+  })
 
   const save = async () => {
     setSaving(true)
@@ -201,6 +302,36 @@ function MemorySettingsSection({ scope, api, llmScope }) {
           }
         }
         await scope.set('refiner', next)
+      }
+      {/* embedding 整体 */}
+      const embKeys = EMBEDDING_FIELDS.map(([f]) => f)
+      if (embKeys.some((f) => drafts[`embedding.${f}`] !== undefined)) {
+        const next = { ...embedding }
+        for (const [f] of EMBEDDING_FIELDS) {
+          const v = drafts[`embedding.${f}`]
+          if (v !== undefined) next[f] = NUMERIC_SUB.has(f) ? Number(v) : String(v)
+        }
+        await scope.set('embedding', next)
+      }
+      {/* reranker 整体 */}
+      const rkKeys = RERANKER_FIELDS.map(([f]) => f)
+      if (rkKeys.some((f) => drafts[`reranker.${f}`] !== undefined)) {
+        const next = { ...reranker }
+        for (const [f] of RERANKER_FIELDS) {
+          const v = drafts[`reranker.${f}`]
+          if (v !== undefined) next[f] = f === 'enabled' ? v : (NUMERIC_SUB.has(f) ? Number(v) : String(v))
+        }
+        await scope.set('reranker', next)
+      }
+      {/* graphView 整体 */}
+      const gvKeys = GRAPH_VIEW_FIELDS.map(([f]) => f)
+      if (gvKeys.some((f) => drafts[`graphView.${f}`] !== undefined)) {
+        const next = { ...graphView }
+        for (const [f] of GRAPH_VIEW_FIELDS) {
+          const v = drafts[`graphView.${f}`]
+          if (v !== undefined) next[f] = Number(v)
+        }
+        await scope.set('graphView', next)
       }
       setDrafts({})
       setMsg('✅ 已保存，改动即时生效')
@@ -380,6 +511,102 @@ function MemorySettingsSection({ scope, api, llmScope }) {
       </div>
       </div>
 
+      <div style={blockStyle}>
+        <div style={blockTitle}>嵌入与重排模型</div>
+        <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
+          嵌入决定向量路质量（remote 失败自动降级 rule 哈希，永久兜底）；重排对 RRF 候选精排（失败降级 RRF 顺序，零损失）。改动 live 生效。
+        </p>
+
+        <div style={{ fontWeight: 500, fontSize: 13, marginTop: 10 }}>嵌入（embedding）</div>
+        {EMBEDDING_FIELDS.map(([field, label, hint]) =>
+          field === 'provider' ? (
+            <Field key={field} label={label} hint={hint}>
+              <select
+                style={inputStyle}
+                value={drafts['embedding.provider'] ?? embedding.provider ?? 'remote'}
+                disabled={!writable}
+                onChange={(e) => setText('embedding', 'provider', e.target.value)}
+              >
+                <option value="remote">remote（OpenAI 兼容 API，推荐）</option>
+                <option value="rule">rule（离线哈希兜底，256 维）</option>
+                <option value="onnx">onnx（本地推理，预留）</option>
+              </select>
+            </Field>
+          ) : (
+            <Field key={field} label={label} hint={hint}>
+              <input
+                style={inputStyle}
+                type="text"
+                value={drafts[`embedding.${field}`] ?? embedding[field] ?? ''}
+                disabled={!writable}
+                onChange={(e) => setText('embedding', field, e.target.value)}
+              />
+            </Field>
+          ),
+        )}
+        <KeyInput
+          api={api}
+          ref={drafts['embedding.apiKeyEnv'] ?? embedding.apiKeyEnv ?? 'MEMORY_EMBEDDING_API_KEY'}
+          hint="硅基流动控制台创建密钥；写入 ~/.dsh/.credentials.yaml（私有文件），不进设置/记忆库、界面不回显。"
+        />
+
+        <div style={{ fontWeight: 500, fontSize: 13, marginTop: 14 }}>重排（reranker）</div>
+        <CheckboxRow
+          label="启用重排"
+          hint="RRF 融合后对候选精排（需已配置重排密钥）"
+          checked={bool('reranker', 'enabled', reranker)}
+          onChange={(e) => setBool('reranker', 'enabled', e.target.checked)}
+        />
+        {RERANKER_FIELDS.filter(([f]) => f !== 'enabled').map(([field, label, hint]) =>
+          field === 'provider' ? (
+            <Field key={field} label={label} hint={hint}>
+              <select
+                style={inputStyle}
+                value={drafts['reranker.provider'] ?? reranker.provider ?? 'remote'}
+                disabled={!writable}
+                onChange={(e) => setText('reranker', 'provider', e.target.value)}
+              >
+                <option value="remote">remote（/v1/rerank）</option>
+                <option value="onnx">onnx（本地，预留）</option>
+              </select>
+            </Field>
+          ) : (
+            <Field key={field} label={label} hint={hint}>
+              <input
+                style={inputStyle}
+                type="text"
+                value={drafts[`reranker.${field}`] ?? reranker[field] ?? ''}
+                disabled={!writable}
+                onChange={(e) => setText('reranker', field, e.target.value)}
+              />
+            </Field>
+          ),
+        )}
+        <KeyInput
+          api={api}
+          ref={drafts['reranker.apiKeyEnv'] ?? reranker.apiKeyEnv ?? 'MEMORY_RERANK_API_KEY'}
+          hint="与嵌入可共用同一密钥；写入凭据文件，不进设置/记忆库、界面不回显。"
+        />
+      </div>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>记忆图谱（力导向手感）</div>
+        <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
+          打开「记忆图谱」面板时读取；改动后重开面板生效。
+        </p>
+        {GRAPH_VIEW_FIELDS.map(([field, label, hint]) => (
+          <Field key={field} label={label} hint={hint}>
+            <input
+              style={inputStyle}
+              type="text"
+              value={drafts[`graphView.${field}`] ?? graphView[field] ?? ''}
+              disabled={!writable}
+              onChange={(e) => setText('graphView', field, e.target.value)}
+            />
+          </Field>
+        ))}
+      </div>
+
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button onClick={save} disabled={!dirty || invalid || saving || !writable}
           style={{ padding: '4px 16px', borderRadius: 6, border: '1px solid #555', background: '#2a2a2a', color: '#eee', cursor: dirty ? 'pointer' : 'default' }}>
@@ -437,7 +664,7 @@ function layoutNodes(data, W, H) {
  *  交互：拖节点（固定 + 重新加热）、拖背景平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击选中
  *  性能：单 Canvas 每帧整绘（数百节点 <5ms）；选中/hover 经 ref 传入，组件零重渲染
  */
-const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef }) {
+const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics }) {
   const canvasRef = useRef(null)
   const hoverRef = useRef(null)
 
@@ -446,6 +673,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     if (!canvas) return
     const ctx = canvas.getContext("2d")
     const dpr = window.devicePixelRatio || 1
+    const P = physics ?? { spring: 0.13, repulsion: 1, damping: 0.3, gravity: 0.005 }
     const resize = () => {
       const rect = canvas.parentElement.getBoundingClientRect()
       canvas.width = Math.max(1, rect.width) * dpr
@@ -507,7 +735,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           if (d >= 2.2 * k) continue   // 远距截断：太远的节点互不影响
           const dd = Math.max(d, 22)   // 软化核心：22px 内斥力不再增长（拖点压邻居不爆炸）
           // 拖动期间斥力减半：跟随交给弹簧，斥力只做让位——防团内连锁推挤振荡
-          const f = Math.min((k * k) / dd, k * 0.6) * alpha * (dragNode ? 0.45 : 1)
+          const f = Math.min((k * k) / dd, k * 0.6) * alpha * P.repulsion * (dragNode ? 0.45 : 1)
           a.vx += (dx / d) * f; a.vy += (dy / d) * f
           b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
         }
@@ -518,17 +746,17 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         const d = Math.sqrt(dx * dx + dy * dy) || 1
         const degFactor = 1 + 0.5 * Math.sqrt(((e.a.degree + e.b.degree) / 2) / maxDeg)
         const target = k * 1.15 * degFactor
-        const f = (d - target) * 0.13 * alpha
+        const f = (d - target) * P.spring * alpha
         e.a.vx += (dx / d) * f; e.a.vy += (dy / d) * f
         e.b.vx -= (dx / d) * f; e.b.vy -= (dy / d) * f
       }
       // 中心引力（增强，孤立节点不漂远）
       // 拖动期间强阻尼爬行：邻居缓慢平滑漂向拖点（无惯性回摆 = 无抖动）；松手恢复弹性
-      const damp = dragNode ? 0.11 : 0.3
+      const damp = dragNode ? 0.11 : P.damping
       for (const n of nodes) {
         if (n === dragNode) { n.vx = 0; n.vy = 0; continue }
-        n.vx += (W() / 2 - n.x) * 0.005 * alpha
-        n.vy += (H() / 2 - n.y) * 0.005 * alpha
+        n.vx += (W() / 2 - n.x) * P.gravity * alpha
+        n.vy += (H() / 2 - n.y) * P.gravity * alpha
         n.vx *= damp; n.vy *= damp
         n.x += n.vx * 1.5; n.y += n.vy * 1.5
       }
@@ -700,7 +928,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       canvas.removeEventListener("click", onClick)
       canvas.removeEventListener("wheel", onWheel)
     }
-  }, [data, onSelect, selectedRef, drawRef])
+  }, [data, onSelect, selectedRef, drawRef, physics])
 
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block", cursor: "grab" }} />
 })
@@ -749,13 +977,32 @@ const DetailPanel = memo(function DetailPanel({ selected, data }) {
   )
 })
 
-/** 记忆图谱视图组件（容器：数据加载 + 选中态；画布与面板均 memo 隔离）。 */
-function MemoryGraphView() {
+/** 记忆图谱视图组件（容器：数据加载 + 选中态；画布与面板均 memo 隔离）。
+ *  scope：memory 设置命名空间（读 graphView 力导向参数，live 生效）。 */
+function MemoryGraphView({ scope }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState("")
   const [selected, setSelected] = useState(null)
   const selectedRef = useRef(null)
   const drawRef = useRef(null)
+
+  // 力导向物理参数：settings.graphView（缺省回落默认手感）；scope 变化 → physics 引用变化 → 重建模拟
+  const [gv, setGv] = useState(() => {
+    try { return scope?.getSnapshot()?.value?.graphView ?? {} } catch { return {} }
+  })
+  useEffect(() => {
+    if (!scope) return
+    const sub = scope.subscribe(() => {
+      try { setGv(scope.getSnapshot()?.value?.graphView ?? {}) } catch { /* 快照异常忽略 */ }
+    })
+    return sub
+  }, [scope])
+  const physics = useMemo(() => ({
+    spring: Number(gv.spring) || 0.13,
+    repulsion: Number(gv.repulsion) || 1,
+    damping: Number(gv.damping) || 0.3,
+    gravity: Number(gv.gravity) ?? 0.005,
+  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity])
 
   const load = useCallback(() => {
     setError("")
@@ -792,7 +1039,7 @@ function MemoryGraphView() {
           记忆 {data.stats.memories} · 主题 {data.themes.length} · 关系 {data.edges.length}
           <button onClick={load} style={{ marginLeft: 10, padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
-        <ObsidianGraph data={data} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} />
+        <ObsidianGraph data={data} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} />
         <div style={{ position: "absolute", left: 14, bottom: 10, fontSize: 11, color: "#777" }}>
           <span style={{ color: "#5b9bd5" }}>— similarTo 语义相似</span>
           <span style={{ marginLeft: 10, color: "#e07b39" }}>→ before 时间演化</span>
@@ -808,7 +1055,7 @@ function MemoryGraphView() {
  * 侧边栏底部入口（sidebar.footer.action，与任务看板同槽）：
  * 点开渲染全视口面板（fixed 覆盖层，含标题栏与关闭按钮），面板内是完整图谱页面。
  */
-function MemoryGraphLauncher({ wide }) {
+function MemoryGraphLauncher({ wide, scope }) {
   const [open, setOpen] = useState(false)
   return (
     <>
@@ -846,7 +1093,7 @@ function MemoryGraphLauncher({ wide }) {
             </button>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
-            <MemoryGraphView />
+            <MemoryGraphView scope={scope} />
           </div>
         </div>
       ) : null}
@@ -872,7 +1119,7 @@ export function apply(ctx) {
       name: 'sidebar.footer.action',
       id: 'memory-graph',
       order: 10,
-      inject: () => ({}),
+      inject: () => ({ scope }),
     }, MemoryGraphLauncher))
   } catch (err) {
     console.warn('[dsh-memory-client] 侧边栏图谱入口注册失败: ' + (err?.message ?? err))

@@ -197,12 +197,38 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 - **移除 tdai-memory**：8/16 凌晨被另一会话批量安装（非用户本意），已从 cordis.patch.yml 删除 + 插件文件清除（原生模块残留待重启后清）
 - **PreText 调研**（docs/pretext-evaluation.md）：@chenglou/pretext（无 DOM 文本测量/布局引擎，MIT）——当前图谱场景 ROI 低暂不集成，列为「节点气泡多行标签 / Canvas 详情卡片 / 千级标签」的备选方案（esbuild 打包 +102KB 实测通过）
 
+## v0.7.0 — reranker 接线 + GUI 嵌入/重排区块 + 图谱参数可调（2026-08-16）
+
+按「下一步（方案已备，按优先级）」清单推进 ① ② ⑦：
+
+### ① reranker 接入 search（RRF 融合后精排，设计文档 §3 落地）
+- **store.search() 后置精排**：RRF 三路融合排序后取 topK（20）候选 → `reranker.rerank(query, docs)` → 融合分 `final = rrfWeight × norm(rrf) + (1-rrfWeight) × rerankScore`（rrfWeight 默认 0.7，可配置）→ 重排序
+- 触发与保护：候选 ≥ minCandidates（3）才重排；reranker 抛错/超时 → 静默降级 RRF 顺序（零损失，console.warn 记录）；配置开关全走 settings（reranker.enabled/topK/minCandidates/rrfWeight）
+- **RemoteReranker 加 LRU 缓存**（(query, doc) → score，1024 条）：注入签名去抖场景同 query 重复 rerank 命中率高；部分命中只发增量请求；全命中零请求
+- **修复隐藏 bug：向量独有命中丢失**——scored 此前只覆盖 FTS+关键词路，仅向量路命中的记忆不进入结果（RRF 分已算但被丢弃）；改为三路并集
+- memory_stats 增加 `rerank` 字段；启动日志显示 reranker 模型
+
+### ② GUI 嵌入/重排设置区块（settings schema 已备，client 补上）
+- 「记忆」设置面板新增「嵌入与重排模型」区块：embedding（provider 下拉 rule/remote/onnx + model/baseUrl/apiKeyEnv/cacheSize）+ reranker（enabled 开关 + provider/model/baseUrl/apiKeyEnv/topK/minCandidates/rrfWeight）
+- 通用 **KeyInput 密钥卡片**组件（password 写凭据文件、●已配置/○未配置徽标、不留空改）——嵌入/重排密钥走独立槽（MEMORY_EMBEDDING_API_KEY / MEMORY_RERANK_API_KEY），refiner 密钥 UI 不动
+- 数值校验扩展到子对象数值字段（cacheSize/topK/minCandidates/rrfWeight 等非数字禁止保存）
+
+### ⑦ 图谱力导向参数进 settings（不再改代码调手感）
+- settings schema 新增 `graphView` 段：spring（弹簧强度 0.13）/ repulsion（斥力倍率 1）/ damping（阻尼 0.3）/ gravity（中心引力 0.005），范围校验
+- 图谱面板 live 读取：MemoryGraphView 订阅 memory 命名空间 → physics 引用变化 → ObsidianGraph 重建模拟（改参数即刻重排，无需重开面板）
+- 设置面板新增「记忆图谱（力导向手感）」区块，四参数可调
+
+### 验证与收尾
+- test-embedder.mjs 扩至 14 项：rerank 缓存（全/部分命中）、store 集成（融合升序/失败降级/候选不足不触发）、向量独有命中回归
+- 五套测试 73 项全过；client bundle 重建（59KB）
+- 版本号 0.6.0 → 0.7.0
+
 ## 下一步（方案已备，按优先级）
 
-- ① reranker 接入 search（RRF 融合后精排——RemoteReranker 已实现待接线）
-- ② GUI 嵌入/重排设置区块（settings schema 已备）
+- ① reranker 接入 search ✅（v0.7.0）→ 待办：真实 API 端到端 A/B（开启重排对比注入命中率）
+- ② GUI 嵌入/重排设置区块 ✅（v0.7.0）→ 待办：provider 切换热迁移 UI 提示
 - ③ 图模型简化：视图层已做「一记忆一节点」投影，store 实体图（node_memories）是否简化待定
 - ④ 管家子代理（全局去重/老化清扫/画像蒸馏）
 - ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）
 - ⑥ Leiden 聚类暂缓（被记忆级主题聚类替代）；规模/高级按需（KuzuDB/LanceDB 等）
-- ⑦ 图谱力导向参数进 settings（弹簧/阻尼/斥力可调，不再改代码调手感）
+- ⑦ 图谱力导向参数进 settings ✅（v0.7.0：spring/repulsion/damping/gravity live 生效）
