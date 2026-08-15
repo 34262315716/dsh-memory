@@ -18,3 +18,7 @@ Thumbs.db
 
 # 日志
 *.log
+
+# GitNexus 索引缓存与注入的技能副本（analyze 时自动重建）
+.gitnexus/
+.claude/
