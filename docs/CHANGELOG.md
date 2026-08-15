@@ -243,12 +243,25 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 - 新测试 test-housekeeping.mjs（8 项）；六套测试 85 项全过；生产库副本验证通过（73 记忆 / 361 实体节点 / memory_links 149 条，无近重复无老化候选）
 - 版本号 0.7.0 → 0.8.0
 
+## v0.8.1 — 管家巡检策略重构（写入量 + 时间双驱动）（2026-08-16）
+
+用户反馈：真实会话通常跑不满 50 轮（几步对话即换会话），「每 N 轮巡检」策略几乎永不触发。
+
+- **触发条件重构**：与对话轮数解耦——
+  - 写入量驱动：每沉淀 `interval`（默认 20）条记忆巡检一次（去重价值随库增长）
+  - 时间兜底：距上次巡检超 `maxIntervalHours`（默认 24h）即触发（跨会话、跨重启）
+- **meta 键值表**：`last_housekeeping_at` 持久化到库（`getMeta`/`setMeta`）——重启后不会因内存清零误触发，也不会永远丢时间基线
+- settings housekeeping 段更新：`interval` 语义改为沉淀条数（5~500，默认 20）、新增 `maxIntervalHours`（1~720，默认 24）
+- **GUI「记忆管家」区块**：设置面板可调（enabled 开关 + interval/maxIntervalHours/dedupThreshold/agingDays）
+- test-housekeeping 扩至 15 项（meta 往返/UPSERT/触发条件四象限）；六套测试 92 项全过；client bundle 重建（62KB）
+- 版本号 0.8.0 → 0.8.1
+
 ## 下一步（方案已备，按优先级）
 
 - ① reranker 接入 search ✅（v0.7.0）→ 待办：真实 API 端到端 A/B（开启重排对比注入命中率）
 - ② GUI 嵌入/重排设置区块 ✅（v0.7.0）→ 待办：provider 切换热迁移 UI 提示
 - ③ 图模型简化 ✅（v0.8.0：memory_links 独立表 + 投影直读 + 迁移）→ 待办：memory_graph_path/neighbors 工具升级为记忆级（memoryPath/memoryLinkNeighbors 已就绪）；实体图是否彻底下线待定
-- ④ 管家子代理 ✅（v0.8.0 期1：去重扫描/老化报告/自动合并/低频自动巡检）→ 待办：画像蒸馏（LLM 聚合 preference/decision 生成用户画像，复用 refiner）
+- ④ 管家子代理 ✅（v0.8.0 期1：去重扫描/老化报告/自动合并；v0.8.1 巡检策略重构：写入量+时间双驱动）→ 待办：画像蒸馏（LLM 聚合 preference/decision 生成用户画像，复用 refiner）
 - ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）
 - ⑥ Leiden 聚类暂缓（被记忆级主题聚类替代）；规模/高级按需（KuzuDB/LanceDB 等）
 - ⑦ 图谱力导向参数进 settings ✅（v0.7.0：spring/repulsion/damping/gravity live 生效）

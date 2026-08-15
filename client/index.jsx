@@ -68,7 +68,15 @@ const GRAPH_VIEW_FIELDS = [
   ['gravity', '中心引力', '孤立节点回中心拉力（0~0.05，默认 0.005）'],
 ]
 
-const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity'])
+/** 管家字段（housekeeping 子对象）。 */
+const HOUSEKEEPING_FIELDS = [
+  ['interval', '巡检间隔（沉淀条数）', '每沉淀 N 条记忆自动巡检一次（5~500，默认 20）'],
+  ['maxIntervalHours', '时间兜底（小时）', '距上次巡检超 N 小时也触发（1~720，默认 24）'],
+  ['dedupThreshold', '近重复阈值', '余弦相似度 ≥ 此值判为近重复（0.8~0.99，默认 0.92）'],
+  ['agingDays', '老化报告天数', '闲置超 N 天的低价值记忆进报告（7~365，默认 30）'],
+]
+
+const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays'])
 
 function Field({ label, hint, children }) {
   return (
@@ -195,6 +203,7 @@ function MemorySettingsSection({ scope, api, llmScope }) {
   const embedding = value.embedding ?? {}
   const reranker = value.reranker ?? {}
   const graphView = value.graphView ?? {}
+  const housekeeping = value.housekeeping ?? {}
   const writable = snap.writable ?? false
   const status = snap.status
 
@@ -332,6 +341,17 @@ function MemorySettingsSection({ scope, api, llmScope }) {
           if (v !== undefined) next[f] = Number(v)
         }
         await scope.set('graphView', next)
+      }
+      {/* housekeeping 整体 */}
+      const hkKeys = HOUSEKEEPING_FIELDS.map(([f]) => f)
+      if (hkKeys.some((f) => drafts[`housekeeping.${f}`] !== undefined) || drafts['housekeeping.enabled'] !== undefined) {
+        const next = { ...housekeeping }
+        for (const [f] of HOUSEKEEPING_FIELDS) {
+          const v = drafts[`housekeeping.${f}`]
+          if (v !== undefined) next[f] = Number(v)
+        }
+        if (drafts['housekeeping.enabled'] !== undefined) next.enabled = drafts['housekeeping.enabled']
+        await scope.set('housekeeping', next)
       }
       setDrafts({})
       setMsg('✅ 已保存，改动即时生效')
@@ -602,6 +622,30 @@ function MemorySettingsSection({ scope, api, llmScope }) {
               value={drafts[`graphView.${field}`] ?? graphView[field] ?? ''}
               disabled={!writable}
               onChange={(e) => setText('graphView', field, e.target.value)}
+            />
+          </Field>
+        ))}
+      </div>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>记忆管家（自动巡检）</div>
+        <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
+          自动检查近重复与老化记忆（只报告不删数据，可调 memory_housekeeping 处理）。触发与对话轮数解耦：每沉淀 N 条记忆 或 距上次巡检超 N 小时。
+        </p>
+        <CheckboxRow
+          label="启用自动巡检"
+          hint="沉淀记忆时低频检查（发现候选写日志提示）"
+          checked={bool('housekeeping', 'enabled', housekeeping)}
+          onChange={(e) => setBool('housekeeping', 'enabled', e.target.checked)}
+        />
+        {HOUSEKEEPING_FIELDS.map(([field, label, hint]) => (
+          <Field key={field} label={label} hint={hint}>
+            <input
+              style={inputStyle}
+              type="text"
+              value={drafts[`housekeeping.${field}`] ?? housekeeping[field] ?? ''}
+              disabled={!writable}
+              onChange={(e) => setText('housekeeping', field, e.target.value)}
             />
           </Field>
         ))}

@@ -53,6 +53,23 @@ const r2 = await store.housekeeping({ dedupThreshold: 0.9, dryRun: false, autoMe
 const kept = store.get(m1) ? m1 : m2
 check('强度高者保留为 target', r2.merged >= 1 && store.get(kept) !== undefined)
 
+console.log('== 6. meta 键值（巡检时间戳跨重启持久化） ==')
+check('getMeta 未设置返回 undefined', store.getMeta('last_housekeeping_at') === undefined)
+store.setMeta('last_housekeeping_at', 123456789)
+check('setMeta/getMeta 往返一致', store.getMeta('last_housekeeping_at') === '123456789')
+store.setMeta('last_housekeeping_at', 987654321)
+check('setMeta UPSERT 覆盖', store.getMeta('last_housekeeping_at') === '987654321')
+
+console.log('== 7. 巡检触发条件（写入量 + 时间双驱动） ==')
+const mkState = (written, lastAt, now) => {
+  const interval = 20, maxIntervalHours = 24
+  return written >= interval || (now - lastAt > maxIntervalHours * 3600 * 1000)
+}
+check('写入量未达且时间未到 → 不触发', !mkState(5, Date.now(), Date.now()))
+check('写入量达到 → 触发', mkState(20, Date.now(), Date.now()))
+check('时间超期 → 触发（即使写入量小）', mkState(1, Date.now() - 25 * 3600 * 1000, Date.now()))
+check('重启后 lastAt 缺失（0）→ 触发', mkState(0, 0, Date.now()))
+
 store.close()
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

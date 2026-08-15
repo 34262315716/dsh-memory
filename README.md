@@ -14,7 +14,7 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触�
 | **时间维度（世界线）** 🐛 | 更新追加版本，旧版本保留但隐藏（不参与检索/注入）；`maxVersions` 滚动裁旧 + 回滚链 |
 | **向量语义检索** | `sqlite-vec` KNN 余弦 + FTS5 BM25 + 关键词三路 **RRF 融合**；扩展加载失败优雅降级；**reranker 后置精排**（RRF 候选 → 融合分 `w×RRF+(1-w)×rerank`，失败降级 RRF 零损失） |
 | **记忆图谱** | 实体节点 + 边（共现/因果/时间演化…）、k-hop 邻域扩散、BFS 最短路径、社区自动聚类；**力导向参数（弹簧/斥力/阻尼/引力）settings 可调、live 生效**；**记忆级边独立表（memory_links）**——GUI 投影直读、记忆级 BFS/邻域、旧实体边自动迁移 |
-| **记忆管家** | 低频自动巡检（turn/end 每 N 轮）：全局去重扫描（余弦近重复）+ 老化报告（长期闲置低价值）；`memory_housekeeping` 工具 dryRun 默认只报告，可选自动合并几乎重复对 |
+| **记忆管家** | 自动巡检（与对话轮数解耦：每沉淀 20 条记忆 或 距上次超 24h 触发，时间戳持久化）：全局去重扫描（余弦近重复）+ 老化报告（长期闲置低价值）；`memory_housekeeping` 工具 dryRun 默认只报告，可选自动合并几乎重复对 |
 | **LLM 蒸馏（refiner）** | 独立模型把高噪声轮次提取为自包含结论（决策/偏好/教训分类）；失败自动降级规则路径 |
 | **遗忘曲线** | 24h 后指数衰减 + 访问加成，惰性批量执行 |
 | **会话预热** | `agent/session-start` 注入最近语义记忆（用户画像/项目背景） |
@@ -147,7 +147,8 @@ memory:
     gravity: 0.005          # 中心引力
   housekeeping:
     enabled: true           # 管家自动巡检（只读报告，不擅改数据）
-    interval: 50            # 每 N 轮巡检一次
+    interval: 20            # 每沉淀 N 条记忆巡检一次
+    maxIntervalHours: 24    # 时间兜底（距上次巡检超 N 小时）
     dedupThreshold: 0.92    # 近重复相似度阈值
     agingDays: 30           # 老化报告天数
 ```
@@ -161,7 +162,7 @@ node test.mjs         # 阶段一回归（16 项）
 node test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
 node test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
 node test-embedder.mjs # 嵌入/重排 seam 单测（14 项：rule/remote/缓存/降级链/rerank 融合与缓存/向量独有命中/真实 API）
-node test-housekeeping.mjs # 管家专项（8 项：去重扫描/老化报告/自动合并/边界）
+node test-housekeeping.mjs # 管家专项（15 项：去重扫描/老化报告/自动合并/meta/触发条件）
 node test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
 node rebuild-graph.mjs # 图谱重建运维脚本（真嵌入归一化重建 + 语义边）
 ```
