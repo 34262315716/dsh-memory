@@ -29,8 +29,11 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=0.1.0",
     "@deepseek-ai/dsh-llm": ">=0.1.0",
-    "@deepseek-ai/dsh-tools": ">=0.1.0",
     "@deepseek-ai/dsh-settings": ">=0.1.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0",
     "@deepseek-ai/schemastery": ">=0.1.0"
+  },
+  "dependencies": {
+    "sqlite-vec": "^0.1.9"
   }
 }
