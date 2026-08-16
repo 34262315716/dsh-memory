@@ -1230,7 +1230,7 @@ function MemoryGraphLauncher({ wide, scope }) {
         {wide ? <span>记忆图谱</span> : null}
       </button>
       {open ? (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 3000, background: '#121212', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, top: 56, zIndex: 9999, background: '#121212', display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid #2a2a2a', flex: 'none' }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: '#ddd' }}>记忆图谱</span>
             <button
