@@ -369,7 +369,7 @@ function MemorySettingsSection({ scope, api, llmScope }) {
 
   if (status !== 'ready') {
     return (
-      <div style={{ padding: 16, maxWidth: 680 }}>
+      <div style={{ padding: 16, maxWidth: 680, overflowY: 'auto', maxHeight: 'calc(100vh - 24px)', boxSizing: 'border-box' }}>
         <h3 style={{ margin: '0 0 8px', fontSize: 16 }}>记忆</h3>
         <p style={{ color: '#888', fontSize: 13 }}>
           记忆插件设置{status === 'loading' ? '加载中…' : '不可用（host 未注册 memory 命名空间）'}
@@ -384,7 +384,7 @@ function MemorySettingsSection({ scope, api, llmScope }) {
   const blockTitle = { margin: '0 0 4px', fontWeight: 600, fontSize: 14 }
 
   return (
-    <div style={{ padding: 16, maxWidth: 680 }}>
+    <div style={{ padding: 16, maxWidth: 680, overflowY: 'auto', maxHeight: 'calc(100vh - 24px)', boxSizing: 'border-box' }}>
       <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>记忆</h3>
       <p style={{ margin: '0 0 8px', color: '#888', fontSize: 13 }}>
         dsh-memory 自动记忆插件——改动即时生效（live），写入 settings.yaml 的 memory 段。
@@ -1199,6 +1199,13 @@ function MemoryGraphView({ scope }) {
  */
 function MemoryGraphLauncher({ wide, scope }) {
   const [open, setOpen] = useState(false)
+  // Esc 关闭全视口面板（键盘可达性；关闭按钮被遮挡时的兜底路径）
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
   return (
     <>
       <button
@@ -1223,15 +1230,16 @@ function MemoryGraphLauncher({ wide, scope }) {
         {wide ? <span>记忆图谱</span> : null}
       </button>
       {open ? (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 1200, background: '#121212', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ position: 'fixed', inset: 0, zIndex: 3000, background: '#121212', display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid #2a2a2a', flex: 'none' }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: '#ddd' }}>记忆图谱</span>
             <button
               type="button"
               onClick={() => setOpen(false)}
-              style={{ padding: '3px 12px', borderRadius: 6, border: '1px solid #444', background: 'transparent', color: '#aaa', cursor: 'pointer', fontSize: 13 }}
+              title="关闭（Esc）"
+              style={{ padding: '6px 18px', borderRadius: 6, border: '1px solid #666', background: '#2a2a2a', color: '#eee', cursor: 'pointer', fontSize: 13, fontWeight: 500 }}
             >
-              关闭
+              关闭（Esc）
             </button>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
