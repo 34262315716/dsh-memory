@@ -40,6 +40,7 @@ memory_graph_node        节点详情 + 邻域
 memory_versions          世界线版本链（回滚前查看）
 memory_rollback          回滚到历史版本（时间旅行）
 memory_housekeeping      管家巡检（去重扫描 + 老化报告；dryRun=false 自动合并近重复）
+system_now               获取当前系统时间（本地 + ISO + Unix + 星期 + 时区）
 ```
 
 ## 🏗 架构
