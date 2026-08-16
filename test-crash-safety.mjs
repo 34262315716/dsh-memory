@@ -98,7 +98,7 @@ console.log('== D. 正常路径：全部工具注册 + 事件监听挂载 ==')
   let threw = false
   try { await apply(ctx, baseCfg(join(dir, 't.db'))) } catch (e) { threw = true; console.log('  ❌ 抛错: ' + e.message) }
   check('正常路径不抛错', !threw)
-  const expected = ['system_now', 'memory_add', 'memory_search', 'memory_forget', 'memory_list', 'memory_stats', 'memory_merge', 'memory_purge', 'memory_housekeeping', 'memory_graph_neighbors', 'memory_graph_path', 'memory_graph_link', 'memory_graph_unlink', 'memory_graph_node', 'memory_graph_communities', 'memory_versions', 'memory_rollback', 'memory_reembed']
+  const expected = ['system_now', 'memory_add', 'memory_search', 'memory_forget', 'memory_list', 'memory_stats', 'memory_merge', 'memory_purge', 'memory_housekeeping', 'memory_events', 'memory_profile_distill', 'memory_graph_neighbors', 'memory_graph_path', 'memory_graph_link', 'memory_graph_unlink', 'memory_graph_node', 'memory_graph_communities', 'memory_versions', 'memory_rollback', 'memory_reembed']
   const missing = expected.filter((n) => !ctx._registeredTools.includes(n))
   check(`全部 ${expected.length} 个工具注册（缺: ${missing.join(',') || '无'}）`, missing.length === 0)
   check('事件监听挂载（session/event + pre-step + session-start）', Boolean(ctx._events['session/event']) && Boolean(ctx._events['agent/pre-step']) && Boolean(ctx._events['agent/session-start']))

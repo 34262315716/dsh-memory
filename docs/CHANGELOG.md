@@ -2,6 +2,33 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.2 — 画像分类（ROADMAP 阶段 B）：记忆的"人物"维度（2026-08-16）
+
+按 ROADMAP 阶段 B 落地用户提出的"画像分类"——关于用户本人的稳定信息（身份/偏好/习惯/背景/沟通方式）单独分类管理。
+
+### 数据模型
+- `type` 枚举新增 **`profile`**；memories 表新增 **`profile_aspect`** 列（旧库自动补列，theme 同款模式）
+- aspect 子域：identity / preference / habit / background / communication_style
+- store.add 支持 aspect 参数（insertMemory 11 列）；get/list 自动带出
+
+### 识别与写入
+- **refiner 蒸馏识别**：extractWithLlm prompt 加规则——"关于用户本人的稳定信息 → type=profile + aspect"（与一次性 decision 区分）；输出校验类型白名单
+- **memory_add 工具**：type enum 加 profile + aspect 参数（模型可主动记录画像）
+- upsertMemory 透传 aspect（merge 路径保留 target 画像子域）
+
+### 会话预热画像优先
+- 预热 seed 从"最近 3 条"改为**画像优先**：画像 3 条 + 非画像 2 条（"用户是谁"优先于"最近干了啥"）
+- `pickPreheatSeeds()` 纯函数导出可测
+
+### 画像蒸馏（管家期 2）
+- **`memory_profile_distill` 工具**：refiner 启用时把散落的 preference/decision 记忆经 LLM 聚合为画像条目（相同属性合并、一次性事件忽略），写入 type=profile + aspect
+- refiner 未启用时报错提示（开启独立提取模型）
+
+### 验证
+- 新测试 test-profile.mjs 12 项（预热画像优先/aspect 读写/蒸馏 mock LLM 全链路）
+- 守护测试工具清单扩至 20 个；全部测试 130+12 项全过；部署副本已同步
+- 版本号 0.9.1 → 0.9.2
+
 ## v0.9.1 — 图谱关系质量修复（before 方向自愈 + similarTo 收紧 + 主题碎片过滤）（2026-08-16）
 
 生产库图谱审计（104 记忆 / 163 条记忆级边）发现 4 类问题，本轮修复 3 项：
@@ -416,7 +443,7 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 - ③ 图模型简化 ✅（v0.8.0：memory_links 独立表 + 投影直读 + 迁移）→ 待办：memory_graph_path/neighbors 工具升级为记忆级（memoryPath/memoryLinkNeighbors 已就绪）→ ROADMAP 阶段 C
 - ④ 管家子代理 ✅（v0.8.0 期1：去重扫描/老化报告/自动合并；v0.8.1 巡检策略重构）→ 待办：画像蒸馏 → ROADMAP 阶段 B
 - **事件分类（新需求）** ✅（v0.9.0：events 表 + 时间线扫描 + 管家增量维护 + memory_events 工具 + 图谱事件筛选/高亮）→ 待办：事件 GUI 视觉增强（成员连线强调、事件时间轴视图）
-- **画像分类（新需求）** → ROADMAP 阶段 B：type=profile + aspect + refiner 识别 + 预热画像优先注入
+- **画像分类（新需求）** ✅（v0.9.2：type=profile + aspect + refiner 识别 + 预热画像优先注入 + 画像蒸馏）→ 待办：GUI 图谱 profile 特殊标记（可选）
 - **预热重复注入去抖（新发现）** → ROADMAP 阶段 D1
 - ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）→ ROADMAP 阶段 E
 - ⑥ Leiden 聚类暂缓（被记忆级主题聚类替代）；规模/高级按需（KuzuDB/LanceDB 等）→ ROADMAP 阶段 E
