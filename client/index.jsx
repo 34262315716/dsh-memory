@@ -739,7 +739,7 @@ function layoutNodes(data, W, H) {
  *  交互：拖节点（固定 + 重新加热）、拖背景平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击选中
  *  性能：单 Canvas 每帧整绘（数百节点 <5ms）；选中/hover 经 ref 传入，组件零重渲染
  */
-const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics }) {
+const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef }) {
   const canvasRef = useRef(null)
   const hoverRef = useRef(null)
 
@@ -891,12 +891,15 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const selId = selectedRef.current
       const hovId = hoverRef.current
       const focusId = selId || hovId
+      // 事件高亮（阶段四）：focusIds 非空时，非事件成员降透明度
+      const focusIds = focusIdsRef?.current ?? null
       // 入场动画：边整体淡入（350ms），节点按距中心距离延迟显现
       const elapsed = performance.now() - bornAt
       const overallT = Math.min(1, elapsed / 350)
       for (const e of edges) {
         const on = !focusId || e.a.id === focusId || e.b.id === focusId
-        ctx.globalAlpha = (focusId ? (on ? 0.9 : 0.1) : 0.45) * overallT
+        const dimmed = focusIds && !(focusIds.has(e.a.id) && focusIds.has(e.b.id))
+        ctx.globalAlpha = (focusId ? (on ? 0.9 : 0.1) : 0.45) * overallT * (dimmed ? 0.08 : 1)
         ctx.strokeStyle = e.type === "similarTo" ? "#5b9bd5" : "#e07b39"
         ctx.lineWidth = (e.type === "similarTo" ? 0.7 : 1.3) / transform.k
         ctx.beginPath()
@@ -907,13 +910,14 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       for (const n of nodes) {
         const isFocus = n.id === focusId
         const isNbr = focusId && neighbors.get(focusId)?.has(n.id)
+        const dimmed = focusIds && !focusIds.has(n.id)
         // 从中心向两边显现：延迟按距中心距离比例（0~55% 的动画时长），easeOutCubic 放大+淡入
         const dist = Math.hypot(n.x - cx0, n.y - cy0)
         const delay = (dist / maxDist) * 0.55 * revealMs
         const t = Math.min(1, Math.max(0, (elapsed - delay) / 320))
         const ease = t <= 0 ? 0 : 1 - (1 - t) * (1 - t) * (1 - t)
         if (ease <= 0.001) continue
-        ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 1) * ease
+        ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 1) * ease * (dimmed ? 0.12 : 1)
         ctx.beginPath()
         const r = (4 + Math.min(n.degree, 14) * 0.55) / Math.sqrt(transform.k) * ease
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
@@ -1164,6 +1168,18 @@ function MemoryGraphView({ scope }) {
   }, [data, ageWindow])
   const updatedCount = (filtered?.nodes ?? []).filter((n) => (n.versions ?? 1) > 1).length
 
+  // 事件高亮（阶段四）：选中事件 → 成员高亮、其余降透明；经 ref 通知画布（不重建模拟）
+  const [eventFilter, setEventFilter] = useState("all")
+  const focusIdsRef = useRef(null)
+  useEffect(() => {
+    if (eventFilter === "all" || !filtered) {
+      focusIdsRef.current = null
+    } else {
+      focusIdsRef.current = new Set(filtered.nodes.filter((n) => n.eventId === eventFilter).map((n) => n.id))
+    }
+    drawRef.current?.()
+  }, [eventFilter, filtered])
+
   if (error) {
     return (
       <div style={{ padding: 24 }}>
@@ -1194,9 +1210,22 @@ function MemoryGraphView({ scope }) {
               <option key={v} value={v}>{label}</option>
             ))}
           </select>
+          <select
+            value={eventFilter}
+            onChange={(e) => setEventFilter(e.target.value)}
+            style={{ padding: "1px 6px", fontSize: 12, borderRadius: 5, border: "1px solid #555", background: "#1a1a1a", color: "#ccc" }}
+            title="按事件高亮（时间连续 + 因果相关的记忆聚簇）"
+          >
+            <option value="all">全部事件</option>
+            {(data?.events ?? []).map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.label}（{e.count} 条）
+              </option>
+            ))}
+          </select>
           <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
-        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} />
+        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} />
         <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2 }}>
           <span style={{ color: "#5b9bd5" }}>— similarTo 语义相似</span>
           <span style={{ marginLeft: 10, color: "#e07b39" }}>→ before 时间演化</span>

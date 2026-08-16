@@ -2,6 +2,27 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.0 — 事件分类（ROADMAP 阶段 A）：时间+因果的记忆聚簇（2026-08-16）
+
+按 ROADMAP 阶段 A 落地用户提出的"事件分类"——区别于 theme（语义相似）的时间性分类（"这段记忆属于哪件事"）。
+
+### 数据与算法
+- 新表 `events`（id/label/start_at/end_at/representative）+ `event_members`（记忆删除级联）
+- **时间线扫描（纯 rule，无 LLM）**：sm 按 created_at 排序，相邻两条「间隔 < gapHours（默认 2h）**且**（同 theme 非空 **或** 共享实体 label 交集）」→ 同一事件；否则切新事件（单记忆自成一事件）
+- 全量重建 + 事件 id 确定性（`ev-首成员记忆id`，重建稳定）；label = 成员 theme 众数（无 → 首成员 type）
+- **踩坑**：共享实体判定初版比 node_id 交集——但 graphLink 的实体节点是记忆私有的（id 含 memoryId），不同记忆同 label 是不同节点 → 改为 **label 集合交集**（node_memories 与 nodes.memory_id 双源合并）
+- store 方法：`detectEvents(gapMs)` / `events(limit)` / `eventMap()`
+
+### 接线
+- settings 新增 `events` 段（enabled/gapHours）；启动初始化 + 管家巡检（双驱动）自动重建事件；派生数据，不碰记忆本体
+- **`memory_events` 工具**：列出事件（label/时间段/成员摘要），detect=true 强制重检测
+- **图谱快照**：nodes 加 eventId + events 列表；**GUI 事件筛选下拉**（与时间筛选并列）——选中事件成员高亮、其余降透明度（经 ref 通知画布，不重建模拟）
+
+### 验证
+- 新测试 test-events.mjs 14 项（组内聚合/组间切分/同主题/共享实体/孤立记忆/幂等/级联/gap 敏感/空库）
+- 七套测试 113 项全过；client bundle 重建（71KB）；部署副本同步（md5 一致）
+- 版本号 0.8.9 → 0.9.0
+
 ## v0.8.9 — 图谱打开动画：预热模拟 + 立即全景 + 中心扩散显现（2026-08-16）
 
 用户反馈：点开图谱会抖动（环形布局展开），再突然跳变成全景图；期望"一开始就是全景图，从中间向两边平滑快速显现"。
@@ -372,7 +393,7 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 - ② GUI 嵌入/重排设置区块 ✅（v0.7.0）→ 待办：provider 切换热迁移 UI 提示 → ROADMAP 阶段 D3
 - ③ 图模型简化 ✅（v0.8.0：memory_links 独立表 + 投影直读 + 迁移）→ 待办：memory_graph_path/neighbors 工具升级为记忆级（memoryPath/memoryLinkNeighbors 已就绪）→ ROADMAP 阶段 C
 - ④ 管家子代理 ✅（v0.8.0 期1：去重扫描/老化报告/自动合并；v0.8.1 巡检策略重构）→ 待办：画像蒸馏 → ROADMAP 阶段 B
-- **事件分类（新需求）** → ROADMAP 阶段 A：events 表 + 时间线扫描 + 管家增量维护 + memory_events 工具 + 图谱事件筛选
+- **事件分类（新需求）** ✅（v0.9.0：events 表 + 时间线扫描 + 管家增量维护 + memory_events 工具 + 图谱事件筛选/高亮）→ 待办：事件 GUI 视觉增强（成员连线强调、事件时间轴视图）
 - **画像分类（新需求）** → ROADMAP 阶段 B：type=profile + aspect + refiner 识别 + 预热画像优先注入
 - **预热重复注入去抖（新发现）** → ROADMAP 阶段 D1
 - ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）→ ROADMAP 阶段 E
