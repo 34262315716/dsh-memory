@@ -71,6 +71,51 @@ console.log('== 5. gap 阈值影响 ==')
 const evs4 = store.detectEvents(0.3 * HOUR)
 check('gap 收紧（0.3h）→ B 组内切分（事件数 +1）', evs4.length === evs3.length + 1)
 
+console.log('== 5b. before 边方向修正（v0.9.1） ==')
+{
+  // 构造倒挂 before 边：from 晚于 to
+  const late = await store.add({ layer: 'sm', scope: 'test', content: '方向修正：晚记忆', keywords: ['dir'] })
+  const early = await store.add({ layer: 'sm', scope: 'test', content: '方向修正：早记忆', keywords: ['dir'] })
+  store.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(base + 20 * HOUR, late)
+  store.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(base + 19 * HOUR, early)
+  store.link(late, early, 'before', 1)   // 倒挂：late → early
+  const beforeFix = store.db.prepare("SELECT COUNT(*) AS c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory = ? AND to_memory = ?").get(late, early).c
+  check('构造倒挂边（late → early）', beforeFix === 1)
+  const fixed = store.fixBeforeDirections()
+  check('倒挂边被修正（fixed ≥ 1）', fixed >= 1)
+  const afterFix = store.db.prepare("SELECT COUNT(*) AS c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory = ? AND to_memory = ?").get(late, early).c
+  const correctDir = store.db.prepare("SELECT COUNT(*) AS c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory = ? AND to_memory = ?").get(early, late).c
+  check('修正后方向正确（early → late，倒挂清零）', afterFix === 0 && correctDir === 1)
+  const fixed2 = store.fixBeforeDirections()
+  check('重复修正幂等（第二次 0 条）', fixed2 === 0)
+  // 同时间戳不修正（无法判定方向，保持不动）
+  const same1 = await store.add({ layer: 'sm', scope: 'test', content: '方向修正：同刻一', keywords: ['dir'] })
+  const same2 = await store.add({ layer: 'sm', scope: 'test', content: '方向修正：同刻二', keywords: ['dir'] })
+  store.db.prepare('UPDATE memories SET created_at = ? WHERE id IN (?, ?)').run(base + 21 * HOUR, same1, same2)
+  store.link(same1, same2, 'before', 1)
+  const beforeSame = store.db.prepare("SELECT COUNT(*) AS c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory = ? AND to_memory = ?").get(same1, same2).c
+  const fixedSame = store.fixBeforeDirections()
+  const afterSame = store.db.prepare("SELECT COUNT(*) AS c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory = ? AND to_memory = ?").get(same1, same2).c
+  check('同时间戳边不修正（保持原样）', beforeSame === 1 && afterSame === 1)
+}
+
+console.log('== 5c. 主题 label 频次过滤（碎片词不入选） ==')
+{
+  const dir2 = mkdtempSync(join(tmpdir(), 'dsh-memory-th-'))
+  const s = new MemoryStore(join(dir2, 't.db'), {})
+  // 单成员簇：关键词碎片频次 1 → theme 应为空
+  const solo = await s.add({ layer: 'sm', scope: 'test', content: '单条记忆：但这个插件好用', keywords: ['但这', '个插'] })
+  // 双成员簇：共享关键词频次 2 → theme 非空
+  const p1 = await s.add({ layer: 'sm', scope: 'test', content: '共享主题一：向量检索调优', keywords: ['向量检索'] })
+  const p2 = await s.add({ layer: 'sm', scope: 'test', content: '共享主题二：向量检索优化', keywords: ['向量检索'] })
+  await s.themeMemories(0.6)
+  const soloTheme = s.db.prepare('SELECT theme FROM memories WHERE id = ?').get(solo).theme
+  const p1Theme = s.db.prepare('SELECT theme FROM memories WHERE id = ?').get(p1).theme
+  check('单成员簇碎片词不入选（theme 空）', soloTheme === '')
+  check('双成员簇共享词入选（theme 非空且含关键词）', p1Theme !== '' && p1Theme.includes('向量检索'))
+  s.close(); rmSync(dir2, { recursive: true, force: true })
+}
+
 console.log('== 6. 空库边界 ==')
 store.db.exec('DELETE FROM memories')
 const evs5 = store.detectEvents(2 * HOUR)
