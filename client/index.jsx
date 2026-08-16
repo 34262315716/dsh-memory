@@ -1180,7 +1180,7 @@ function MemoryGraphView({ scope }) {
           <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
         <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} />
-        <div style={{ position: "absolute", left: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2 }}>
+        <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2 }}>
           <span style={{ color: "#5b9bd5" }}>— similarTo 语义相似</span>
           <span style={{ marginLeft: 10, color: "#e07b39" }}>→ before 时间演化</span>
           <span style={{ marginLeft: 10, color: "#ffd54f" }}>◎ 外环 = 更新过（环数 = 更新次数）</span>
@@ -1230,20 +1230,35 @@ function MemoryGraphLauncher({ wide, scope }) {
         {wide ? <span>记忆图谱</span> : null}
       </button>
       {open ? (
-        <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, top: 56, zIndex: 9999, background: '#121212', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid #2a2a2a', flex: 'none' }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: '#ddd' }}>记忆图谱</span>
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(16, 16, 18, 0.72)',
+          backdropFilter: 'blur(22px) saturate(1.2)',
+          WebkitBackdropFilter: 'blur(22px) saturate(1.2)',
+          display: 'flex', flexDirection: 'column',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', padding: '44px 16px 10px', flex: 'none' }}>
+            <span style={{ fontSize: 15, fontWeight: 600, color: '#ddd', letterSpacing: 0.5 }}>记忆图谱</span>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+            <MemoryGraphView scope={scope} />
+            {/* 左下角退出键：毛玻璃质感，远离顶栏不被遮挡；Esc 同效 */}
             <button
               type="button"
               onClick={() => setOpen(false)}
-              title="关闭（Esc）"
-              style={{ padding: '6px 18px', borderRadius: 6, border: '1px solid #666', background: '#2a2a2a', color: '#eee', cursor: 'pointer', fontSize: 13, fontWeight: 500 }}
+              title="关闭图谱（Esc）"
+              style={{
+                position: 'absolute', left: 16, bottom: 16, zIndex: 10,
+                padding: '8px 22px', borderRadius: 10, cursor: 'pointer',
+                border: '1px solid rgba(255,255,255,0.22)',
+                background: 'rgba(255,255,255,0.08)',
+                backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                color: '#eee', fontSize: 13, fontWeight: 500, letterSpacing: 0.5,
+                boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
+              }}
             >
-              关闭（Esc）
+              退出图谱（Esc）
             </button>
-          </div>
-          <div style={{ flex: 1, minHeight: 0 }}>
-            <MemoryGraphView scope={scope} />
           </div>
         </div>
       ) : null}
