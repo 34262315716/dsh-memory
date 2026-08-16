@@ -791,7 +791,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     //  斥力：Fruchterman k²/d + 距离截断 2.2k（远距零斥力 → 孤立节点不被无限推远）
     //  弹簧：目标长度度感知（枢纽节点周围留更大空间）+ 强度 0.07（更紧）
     //  中心引力：0.005 线性（孤立节点回归中心；被拖拽节点豁免）
-    let alpha = 0.7, raf = 0
+    let alpha = 0.45, raf = 0   // 初始 α 调低：首帧运动更温和（配合预热，打开即稳定全景）
     const k = Math.sqrt((W() * H()) / Math.max(nodes.length, 1))
     const maxDeg = Math.max(...nodes.map((n) => n.degree), 1)
     let dragNode = null
@@ -840,8 +840,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       }
     }
 
-    // ---- 自适应视野（fit-to-view：力导向冷却后自动缩放居中到全部节点） ----
-    let fitted = false
+    // ---- 自适应视野（fit-to-view） ----
     const fitToView = () => {
       if (nodes.length === 0) return
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -857,8 +856,19 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       transform.k = Math.max(0.28, kFit)
       transform.x = (W() - bw * transform.k) / 2 - minX * transform.k
       transform.y = (H() - bh * transform.k) / 2 - minY * transform.k
-      fitted = true
     }
+
+    // ---- 打开动画：预热模拟 → 立即全景 → 从中心向两边平滑显现 ----
+    // 1) 预热：先离线跑 40 步模拟（首帧即接近收敛的稳定布局，消除"环形展开抖动"）
+    for (let i = 0; i < 40; i++) step()
+    // 2) 立即全景（不再等模拟收敛后才跳变缩放）
+    fitToView()
+    // 3) 显现动画参数：节点按距视口中心距离延迟淡入+放大（中心先亮，向两边扩散）
+    const bornAt = performance.now()
+    const revealMs = 700
+    const cx0 = W() / 2, cy0 = H() / 2
+    let maxDist = 1
+    for (const n of nodes) maxDist = Math.max(maxDist, Math.hypot(n.x - cx0, n.y - cy0))
 
     // ---- 绘制 ----
     const draw = () => {
@@ -881,9 +891,12 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const selId = selectedRef.current
       const hovId = hoverRef.current
       const focusId = selId || hovId
+      // 入场动画：边整体淡入（350ms），节点按距中心距离延迟显现
+      const elapsed = performance.now() - bornAt
+      const overallT = Math.min(1, elapsed / 350)
       for (const e of edges) {
         const on = !focusId || e.a.id === focusId || e.b.id === focusId
-        ctx.globalAlpha = focusId ? (on ? 0.9 : 0.1) : 0.45
+        ctx.globalAlpha = (focusId ? (on ? 0.9 : 0.1) : 0.45) * overallT
         ctx.strokeStyle = e.type === "similarTo" ? "#5b9bd5" : "#e07b39"
         ctx.lineWidth = (e.type === "similarTo" ? 0.7 : 1.3) / transform.k
         ctx.beginPath()
@@ -894,9 +907,15 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       for (const n of nodes) {
         const isFocus = n.id === focusId
         const isNbr = focusId && neighbors.get(focusId)?.has(n.id)
-        ctx.globalAlpha = focusId ? (isFocus || isNbr ? 1 : 0.2) : 1
+        // 从中心向两边显现：延迟按距中心距离比例（0~55% 的动画时长），easeOutCubic 放大+淡入
+        const dist = Math.hypot(n.x - cx0, n.y - cy0)
+        const delay = (dist / maxDist) * 0.55 * revealMs
+        const t = Math.min(1, Math.max(0, (elapsed - delay) / 320))
+        const ease = t <= 0 ? 0 : 1 - (1 - t) * (1 - t) * (1 - t)
+        if (ease <= 0.001) continue
+        ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 1) * ease
         ctx.beginPath()
-        const r = (4 + Math.min(n.degree, 14) * 0.55) / Math.sqrt(transform.k)
+        const r = (4 + Math.min(n.degree, 14) * 0.55) / Math.sqrt(transform.k) * ease
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
         ctx.fillStyle = n.color
         ctx.fill()
@@ -924,7 +943,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           ctx.fillText(tag, n.x, n.y - r - 10 / transform.k)
         }
         if (transform.k > 0.65 || isFocus) {
-          ctx.globalAlpha = isFocus || !focusId ? 1 : 0.3
+          ctx.globalAlpha = (isFocus || !focusId ? 1 : 0.3) * ease
           ctx.fillStyle = "#ccc"
           ctx.font = (10 / transform.k) + "px sans-serif"
           ctx.textAlign = "center"
@@ -938,8 +957,6 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
 
     const loop = () => {
       step()
-      // 模拟接近收敛且无人拖动时，自适应一次视野（全部节点可见）
-      if (!fitted && !dragNode && (alpha < 0.06 || nodes.every((n) => Math.abs(n.vx) < 0.02))) fitToView()
       draw()
       // 拖动期间循环永续（节点跟随不冻结）；冷却且无拖动时停帧省 CPU
       if (alpha > 0.008 || dragNode) raf = requestAnimationFrame(loop)
