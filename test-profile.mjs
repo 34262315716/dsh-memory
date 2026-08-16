@@ -1,6 +1,6 @@
-// 阶段四（v0.9.2）：画像分类专项——预热画像优先 / aspect 读写 / 画像蒸馏（mock LLM）
+// 阶段四（v0.9.2）：画像分类专项——预热画像取用 / aspect 读写 / 画像蒸馏（mock LLM）
 // 用法: node test-profile.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
-import { apply, pickPreheatSeeds } from './lib/index.js'
+import { apply } from './lib/index.js'
 import { MemoryStore } from './lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,22 +9,22 @@ import { tmpdir } from 'node:os'
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
 
-console.log('== 1. 预热 seed：画像优先（画像 3 + 非画像 2，画像在前） ==')
-const sm = [
-  { type: 'decision', content: 'd1' },
-  { type: 'profile', content: 'p1' },
-  { type: 'note', content: 'n1' },
-  { type: 'profile', content: 'p2' },
-  { type: 'preference', content: 'pr1' },
-  { type: 'profile', content: 'p3' },
-  { type: 'profile', content: 'p4' },
-]
-const seeds = pickPreheatSeeds(sm)
-check('种子数 = 5（画像 3 + 非画像 2）', seeds.length === 5)
-check('画像在前（前 3 条全是 profile）', seeds.slice(0, 3).every((s) => s.type === 'profile'))
-check('画像取最近 3 条（p4 溢出被截）', seeds.slice(0, 3).map((s) => s.content).join(',') === 'p1,p2,p3')
-check('非画像取 2 条', seeds.slice(3).length === 2 && seeds.slice(3).every((s) => s.type !== 'profile'))
-check('空列表安全', pickPreheatSeeds([]).length === 0)
+console.log('== 1. 预热画像取用：list type 过滤不受"最近 50 条"窗口挤压 ==')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-prof0-'))
+  const s = new MemoryStore(join(dir, 't.db'), {})
+  // 60 条普通记忆（把画像挤出最近 50 窗口）+ 3 条画像（created_at 更早）
+  for (let i = 0; i < 60; i++) await s.add({ layer: 'sm', type: 'note', scope: 'test', content: `普通记忆 ${i}`, keywords: ['n'] })
+  const p1 = await s.add({ layer: 'sm', type: 'profile', scope: 'test', content: '画像一：用户偏好 A', keywords: ['pa'], aspect: 'preference' })
+  const p2 = await s.add({ layer: 'sm', type: 'profile', scope: 'test', content: '画像二：用户背景 B', keywords: ['pb'], aspect: 'background' })
+  // 画像更新时间为 30 天前（模拟长期稳定画像沉底）
+  s.db.prepare('UPDATE memories SET updated_at = ? WHERE id IN (?, ?)').run(Date.now() - 30 * 24 * 3600 * 1000, p1, p2)
+  const profiles = s.list({ layer: 'sm', type: 'profile', limit: 3 })
+  check('type 过滤直取画像（不受窗口挤压）', profiles.length === 2 && profiles.every((m) => m.type === 'profile'))
+  const window50 = s.list({ layer: 'sm', limit: 50 })
+  check('画像确实沉出最近 50 窗口（修复前画像优先失效的场景）', !window50.some((m) => m.type === 'profile'))
+  s.close(); rmSync(dir, { recursive: true, force: true })
+}
 
 console.log('== 2. aspect 读写（store 层） ==')
 {
@@ -84,7 +84,50 @@ console.log('== 3. 画像蒸馏（mock LLM 返回画像 JSON） ==')
   check('画像已写入库（type=profile）', profs.length === 2)
   const prefer = profs.find((m) => m.profile_aspect === 'preference')
   check('写入的画像 aspect 持久化', prefer && prefer.content.includes('自建端点'))
-  s1.close(); disposeFn?.(); rmSync(dir, { recursive: true, force: true })
+  // 幂等：第二次蒸馏——源记忆已记录在 meta → 无候选 → 空结果
+  const out2 = await distill.execute({ limit: 5 })
+  check('重复蒸馏幂等（已蒸馏源跳过，返回空）', out2.profiles.length === 0)
+  const s2 = new MemoryStore(dbFile, {})
+  check('幂等后画像不重复累积', s2.list({ layer: 'sm', type: 'profile', limit: 20 }).length === 2)
+  s1.close(); s2.close(); disposeFn?.(); rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('== 4. 坏 JSON 容错（与 auto-write 降级路径一致） ==')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-prof3-'))
+  const dbFile = join(dir, 't.db')
+  const s0 = new MemoryStore(dbFile, {})
+  await s0.add({ layer: 'sm', type: 'preference', scope: 'test', content: '用户偏好坏JSON测试', keywords: ['坏'] })
+  s0.close()
+  const registeredTools = []
+  let disposeFn = null
+  const badLlm = { stream: async function* () { yield { type: 'text-delta', text: '这不是JSON{{{bad' } } }
+  const scopeMock = {
+    get: () => ({
+      enabled: true,
+      features: { autoWrite: true, valueGate: true, dedupMerge: true, preStepInject: true, manageTools: true, time: true, graph: true },
+      embedding: { provider: 'rule' },
+      refiner: { enabled: true, provider: 'mock', model: 'mock', maxTokens: 800 },
+      reranker: { enabled: false },
+      housekeeping: { enabled: false },
+      dbFile,
+    }),
+  }
+  const ctx = {
+    settings: { register: () => scopeMock },
+    tools: { register: (tool) => { registeredTools.push(tool) } },
+    on: (ev, fn) => { if (ev === 'dispose') disposeFn = fn },
+    provide: () => {},
+    inject: (_names, cb) => { const host = { webServer: { register: () => () => {} } }; host.effect = (fn) => fn(); cb(host) },
+    llm: badLlm,
+  }
+  await apply(ctx, { enabled: true, features: { autoWrite: true, valueGate: true, dedupMerge: true, preStepInject: true, manageTools: true, time: true, graph: true }, embedding: { provider: 'rule' }, refiner: { enabled: true }, reranker: { enabled: false }, housekeeping: { enabled: false }, dbFile })
+  const distill = registeredTools.find((t) => t.name === 'memory_profile_distill')
+  let threw = false
+  let out = null
+  try { out = await distill.execute({ limit: 5 }) } catch { threw = true }
+  check('坏 JSON 不抛错（返回空结果）', !threw && out.profiles.length === 0)
+  disposeFn?.(); rmSync(dir, { recursive: true, force: true })
 }
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败')

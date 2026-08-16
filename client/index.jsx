@@ -1172,13 +1172,21 @@ function MemoryGraphView({ scope }) {
   const [eventFilter, setEventFilter] = useState("all")
   const focusIdsRef = useRef(null)
   useEffect(() => {
+    // 陈旧 id 防护：detectEvents 全量重建后事件 id 可能变更——若选中事件已不存在，
+    // 重置为 "all"（否则空 Set 会让全图 ×0.12 灰暗）
+    if (eventFilter !== "all" && !(data?.events ?? []).some((e) => e.id === eventFilter)) {
+      setEventFilter("all")
+      focusIdsRef.current = null
+      drawRef.current?.()
+      return
+    }
     if (eventFilter === "all" || !filtered) {
       focusIdsRef.current = null
     } else {
       focusIdsRef.current = new Set(filtered.nodes.filter((n) => n.eventId === eventFilter).map((n) => n.id))
     }
     drawRef.current?.()
-  }, [eventFilter, filtered])
+  }, [eventFilter, filtered, data])
 
   if (error) {
     return (

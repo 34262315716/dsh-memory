@@ -2,6 +2,31 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.3 — 子代理审查修复批（画像 aspect 读回路 / 预热窗口挤压 / 蒸馏幂等）（2026-08-16）
+
+子代理对 v0.9.0~v0.9.2 深度审查（P0 无 / P1×1 / P2×5 / P3×6），全部修复：
+
+### P1-1 aspect「只写不回」→ 补读回路
+- memory_list / memory_search 输出加 aspect 字段（渲染展示子域）；图谱快照 nodes 加 aspect
+- 删除 updateAspect 死代码；画像维度对模型/GUI 可见可用
+
+### P2 修复
+- **P2-1 预热画像被窗口挤压**：画像改为 `list({type:'profile'})` 直取（不再经"最近 50 条"窗口——画像 updated_at 恒为创建时刻，会被近期活跃记忆整体挤出）
+- **P2-2 蒸馏无去重幂等**：meta 表 `profile_distilled_sources` 记录已蒸馏源记忆 id，重复调用跳过（画像不重复累积）
+- **P2-3 蒸馏坏 JSON 无容错**：与 auto-write 降级路径对齐——解析失败 warn + 返回空结果
+- **P2-4 事件筛选陈旧 id 全图灰暗**：effect 检测选中事件已不存在（detectEvents 重建后 id 变更）→ 自动重置 "all"
+- **P2-5 events() N+1**：成员单条 JOIN 预取 + 内存分组（快照加载 51 条 SQL → 2 条）
+- 顺带：store.list 加 type 过滤参数（预热/工具复用）
+
+### P3 落实
+- fixBeforeDirections 保留原权重 + fixed 计数只算真实重建（正确方向已存在时不再虚报）；注释说明逆语义 before 边约束
+- node_memories 注释澄清（仅 rebuild-graph 写入）；事件 id 稳定性约定注释
+- 预热行展示画像子域（`画像·preference`）
+
+### 验证
+- test-profile 扩至 12 项（窗口挤压场景/蒸馏幂等/坏 JSON 容错）；全部测试 130+ 项全过；client bundle 重建（71KB）；部署副本已同步
+- 版本号 0.9.2 → 0.9.3
+
 ## v0.9.2 — 画像分类（ROADMAP 阶段 B）：记忆的"人物"维度（2026-08-16）
 
 按 ROADMAP 阶段 B 落地用户提出的"画像分类"——关于用户本人的稳定信息（身份/偏好/习惯/背景/沟通方式）单独分类管理。
