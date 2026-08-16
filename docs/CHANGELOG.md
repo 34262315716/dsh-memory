@@ -366,10 +366,15 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 
 ## 下一步（方案已备，按优先级）
 
-- ① reranker 接入 search ✅（v0.7.0）→ 待办：真实 API 端到端 A/B（开启重排对比注入命中率）
-- ② GUI 嵌入/重排设置区块 ✅（v0.7.0）→ 待办：provider 切换热迁移 UI 提示
-- ③ 图模型简化 ✅（v0.8.0：memory_links 独立表 + 投影直读 + 迁移）→ 待办：memory_graph_path/neighbors 工具升级为记忆级（memoryPath/memoryLinkNeighbors 已就绪）；实体图是否彻底下线待定
-- ④ 管家子代理 ✅（v0.8.0 期1：去重扫描/老化报告/自动合并；v0.8.1 巡检策略重构：写入量+时间双驱动）→ 待办：画像蒸馏（LLM 聚合 preference/decision 生成用户画像，复用 refiner）
-- ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）
-- ⑥ Leiden 聚类暂缓（被记忆级主题聚类替代）；规模/高级按需（KuzuDB/LanceDB 等）
+> 详细执行计划见 **[`docs/ROADMAP.md`](ROADMAP.md)**（v0.9 系列：A 事件分类 → B 画像分类 → C 图工具升级 → D 小项 → E 远期）。
+
+- ① reranker 接入 search ✅（v0.7.0）→ 待办：真实 API 端到端 A/B（开启重排对比注入命中率）→ ROADMAP 阶段 D2
+- ② GUI 嵌入/重排设置区块 ✅（v0.7.0）→ 待办：provider 切换热迁移 UI 提示 → ROADMAP 阶段 D3
+- ③ 图模型简化 ✅（v0.8.0：memory_links 独立表 + 投影直读 + 迁移）→ 待办：memory_graph_path/neighbors 工具升级为记忆级（memoryPath/memoryLinkNeighbors 已就绪）→ ROADMAP 阶段 C
+- ④ 管家子代理 ✅（v0.8.0 期1：去重扫描/老化报告/自动合并；v0.8.1 巡检策略重构）→ 待办：画像蒸馏 → ROADMAP 阶段 B
+- **事件分类（新需求）** → ROADMAP 阶段 A：events 表 + 时间线扫描 + 管家增量维护 + memory_events 工具 + 图谱事件筛选
+- **画像分类（新需求）** → ROADMAP 阶段 B：type=profile + aspect + refiner 识别 + 预热画像优先注入
+- **预热重复注入去抖（新发现）** → ROADMAP 阶段 D1
+- ⑤ compaction-smart（用户定：记忆系统之后再看——里程碑文档已立）→ ROADMAP 阶段 E
+- ⑥ Leiden 聚类暂缓（被记忆级主题聚类替代）；规模/高级按需（KuzuDB/LanceDB 等）→ ROADMAP 阶段 E
 - ⑦ 图谱力导向参数进 settings ✅（v0.7.0：spring/repulsion/damping/gravity live 生效）
