@@ -10,13 +10,14 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触�
 |---|---|
 | **自动注入** | `agent/pre-step` 每步检索相关记忆并 `agent.inject()`（不依赖用户消息）；节流 + 签名去抖 + 注入块 hash 去抖 + 防循环窗口 |
 | **自动沉淀** | `turn/end` 写入 + 价值门过滤 + Jaccard 去重合并（相似记忆更新而非新建） |
-| **分层记忆** | `ep`（情景，turn 快照）/ `sm`（语义，长期知识），带 scope 隔离 |
+| **分层记忆** | `ep`（情景，turn 快照）/ `sm`（语义，长期知识），**scope 项目隔离**：按会话工作目录自动分层（workspaceRegistry fallback），画像跨项目公共层 |
 | **时间维度（世界线）** 🐛 | 更新追加版本，旧版本保留但隐藏（不参与检索/注入）；`maxVersions` 滚动裁旧 + 回滚链 |
 | **向量语义检索** | `sqlite-vec` KNN 余弦 + FTS5 BM25 + 关键词三路 **RRF 融合**；扩展加载失败优雅降级；**reranker 后置精排**（RRF 候选 → 融合分 `w×RRF+(1-w)×rerank`，失败降级 RRF 零损失） |
 | **记忆图谱** | 实体节点 + 边（共现/因果/时间演化…）、k-hop 邻域扩散、BFS 最短路径、社区自动聚类；**力导向参数（弹簧/斥力/阻尼/引力）settings 可调、live 生效**；**记忆级边独立表（memory_links）**——GUI 投影直读、记忆级 BFS/邻域、旧实体边自动迁移；**时间维度可视化**：更新过的节点有金色年轮（环数=更新次数）、新旧色温（库内相对映射）、时间窗筛选、hover 时间标签 |
 | **记忆管家** | 自动巡检（与对话轮数解耦：每沉淀 20 条记忆 或 距上次超 24h 触发，时间戳持久化）：全局去重扫描（余弦近重复）+ 老化报告（长期闲置低价值）；`memory_housekeeping` 工具 dryRun 默认只报告，可选自动合并几乎重复对 |
 | **事件分类** | 时间连续 + 因果相关（同主题/共享实体）的记忆聚簇——"这段记忆属于哪件事"（区别于 theme 的"在讲什么"）；时间线扫描纯 rule 算法，管家自动维护；`memory_events` 工具 + 图谱事件筛选/高亮 |
 | **画像分类** | 关于用户本人的稳定信息（身份/偏好/习惯/背景/沟通方式）单独分类：type=profile + aspect 子域；refiner 自动识别；**会话预热画像优先注入**（"用户是谁"优先于"最近干了啥"）；`memory_profile_distill` 画像蒸馏 |
+| **运行日志** | 背后运行了什么完全透明可见：写入/注入/检索/巡检/蒸馏/错误全链路埋点；GUI「记忆日志」面板（侧边栏入口 + 3s 轮询 + 筛选）+ `memory_logs` 工具 + `/dsh-memory/logs` API |
 | **LLM 蒸馏（refiner）** | 独立模型把高噪声轮次提取为自包含结论（决策/偏好/教训分类）；失败自动降级规则路径 |
 | **遗忘曲线** | 24h 后指数衰减 + 访问加成，惰性批量执行 |
 | **会话预热** | `agent/session-start` 注入最近语义记忆（用户画像/项目背景） |
@@ -44,6 +45,7 @@ memory_rollback          回滚到历史版本（时间旅行）
 memory_housekeeping      管家巡检（去重扫描 + 老化报告；dryRun=false 自动合并近重复）
 memory_events            列出记忆事件（时间+因果聚簇；detect=true 强制重检测）
 memory_profile_distill   画像蒸馏（偏好/决策聚合为用户画像；需 refiner 启用）
+memory_logs               查看运行日志（写入/注入/检索/巡检/蒸馏/错误全透明）
 system_now               获取当前系统时间（本地 + ISO + Unix + 星期 + 时区）
 ```
 
@@ -159,6 +161,9 @@ memory:
   events:
     enabled: true           # 事件分类（时间+因果聚簇，管家自动检测）
     gapHours: 2             # 时间线扫描间隔阈值（相邻记忆间隔 < 2h 且同主题/共享实体 → 同一事件）
+  logging:
+    enabled: true           # 运行日志（背后做了什么全透明）
+    maxRows: 2000           # 日志保留条数（惰性裁剪）
 ```
 
 **密钥自动跟随**：选中供应商后，GUI 密钥输入的目标引用自动切换为该供应商声明的 `apiKeyEnv`；密钥本体写入 `~/.dsh/.credentials.yaml`（私有文件），不进设置文档、不进记忆库、界面不回显。
@@ -170,9 +175,9 @@ node test.mjs         # 阶段一回归（16 项）
 node test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
 node test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
 node test-embedder.mjs # 嵌入/重排 seam 单测（14 项：rule/remote/缓存/降级链/rerank 融合与缓存/向量独有命中/真实 API）
-node test-housekeeping.mjs # 管家专项（19 项：去重扫描/老化报告/自动合并/meta/触发条件/touch/迁移幂等）
+node test-housekeeping.mjs # 管家/存储专项（30 项：去重/老化/meta/触发/touch/迁移幂等/多 scope/日志）
 node test-events.mjs    # 事件分类专项（21 项：时间线扫描/聚合切分/幂等/级联/gap 敏感/before 方向修正/主题过滤/空库）
-node test-profile.mjs   # 画像分类专项（12 项：预热画像优先/aspect 读写/蒸馏 mock LLM；需副本环境）
+node test-profile.mjs   # 画像分类专项（16 项：scopeOf 三态/预热画像/aspect 读写/蒸馏 mock LLM；需副本环境）
 node test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
                           # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行
 node test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
