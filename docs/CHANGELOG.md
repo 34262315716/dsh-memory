@@ -2,6 +2,17 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.6 — 热修复：v0.9.5 埋点作用域 bug（memory_add 等工具 ReferenceError）（2026-08-17）
+
+重启验证时业务发现 `memory_add` 报 "wsRegistry is not defined"——v0.9.5 埋点把 apply 局部变量（`wsRegistry`、`logStore`）用进了**模块级 `registerTools` 函数**的工具闭包，工具 execute 运行时 ReferenceError。
+
+- **wsRegistry**：apply 局部变量 → registerTools 内改用 `ctx?.workspaceRegistry`（inject 已声明）
+- **logStore**：apply 局部 helper → registerTools 内自备（`getCfg().logging` 控制 + store.log）
+- 影响工具：memory_add / memory_search / memory_housekeeping / memory_events / memory_profile_distill（tool.* 埋点路径全部修复）
+- 深挖：v0.9.5 的 tool.* 埋点 + scope 分层依赖 apply 闭包，注册后脱离 apply 作用域——**教训：registerTools 是模块级函数，工具内不可依赖 apply 局部变量，要么传参要么自备**
+- 验证：test-profile 16 项（含蒸馏不再崩）+ crash-safety 10/10 + 全量本地回归
+- 版本号 0.9.5 → 0.9.6；⚠️ **需重启 EAC 生效**（当前运行中的还是会报错的原版）
+
 ## v0.9.5 — 运行日志全透明 + scope 分层根治（workspaceRegistry fallback）（2026-08-17）
 
 用户两个需求：
