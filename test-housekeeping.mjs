@@ -134,6 +134,25 @@ console.log('== 10. 多 scope 检索/列表（项目隔离，v0.9.4） ==')
   s.close(); rmSync(dir5, { recursive: true, force: true })
 }
 
+console.log('== 11. 运行日志（v0.9.5） ==')
+{
+  const dir6 = mkdtempSync(join(tmpdir(), 'dsh-memory-log-'))
+  const s = new MemoryStore(join(dir6, 't.db'), {})
+  s.log('info', 'write', { content: '测试写入' }, 'dsh-memory')
+  s.log('warn', 'write.skipped', { reason: 'no-outcome' })
+  s.log('error', 'write.failed', { err: 'boom' }, 'global')
+  const all = s.listLogs({ limit: 10 })
+  check('日志写入并读回（3 条）', all.length === 3)
+  check('日志时间倒序（最新在前）', all[0].event === 'write.failed')
+  check('级别过滤', s.listLogs({ level: 'error', limit: 10 }).length === 1)
+  check('事件过滤', s.listLogs({ event: 'write', limit: 10 }).length === 1)
+  check('scope 记录', all[2].scope === 'dsh-memory')
+  for (let i = 0; i < 150; i++) s.log('info', 'flood', { i })
+  const capped = s.listLogs({ limit: 1000 })
+  check('日志洪峰不超限（惰性裁剪）', capped.length <= 2000)
+  s.close(); rmSync(dir6, { recursive: true, force: true })
+}
+
 store.close()
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

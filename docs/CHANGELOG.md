@@ -2,6 +2,29 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.5 — 运行日志全透明 + scope 分层根治（workspaceRegistry fallback）（2026-08-17）
+
+用户两个需求：
+1. **日志**——"在背后运行了什么我们都要透明地完全看见"
+2. 预热仍注入跨项目记忆——查证 v0.9.4 分层**从未生效**：生产库 134 条 100% global（含 v0.9.4 部署后写入的）——根因：**EAC/web 会话没有 cwd**（SessionHeader.cwd 为 undefined），scopeOf 恒返回 global
+
+### 日志系统（背后运行全透明）
+- **logs 表**（ts/level/event/scope/detail，惰性裁剪至 maxRows 2000）+ store.log/listLogs
+- **全链路埋点**：init（embedder 状态）、preheat（预热种子）、inject（检索 query/hits/picked/分数/scope）、write（沉淀/refiner 蒸馏/降级/valueGate 拦截原因）、housekeeping（去重/老化）、events.detect、links.fix、tool.add/search/housekeeping/events/distill、错误路径
+- **`/dsh-memory/logs` API**（limit/level/event 过滤）+ **`memory_logs` 工具**（模型可查）
+- **GUI「记忆日志」面板**：侧边栏底部入口（与图谱同槽）→ 全视口毛玻璃面板，3s 轮询实时刷新、级别/事件筛选、暂停/继续、自动滚动、退出键左下角 + Esc
+- settings logging 段（enabled/maxRows）
+
+### scope 分层根治
+- session.meta.cwd 缺失时 **fallback `ctx.workspaceRegistry`**（会话 → 所属工作区 path basename）——EAC 会话通过 workspaceRegistry 定位项目
+- scopeOf(sessionOrAgent, registry)：cwd 优先 → workspaceRegistry → global
+- 插件 inject 声明加 'workspaceRegistry'
+
+### 验证
+- test-housekeeping 扩至 30 项（日志读写/倒序/过滤/裁剪）；test-profile 加 scopeOf 三态（cwd/registry fallback/global）
+- 全部测试通过；client bundle 重建（81KB）；部署副本已同步（md5 校验）；版本号 0.9.4 → 0.9.5
+- 注意：重启 EAC 加载 v0.9.5 后，新记忆才会按工作区分层；存量 134 条 global 保持为公共层
+
 ## v0.9.4 — 会话工作目录分层（根治跨项目记忆串味）（2026-08-17）
 
 用户实证问题：在 dsh-memory 开发会话里，预热注入的却是机甲 AI 绘画记忆。查证根因：

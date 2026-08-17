@@ -1,6 +1,6 @@
 // 阶段四（v0.9.2）：画像分类专项——预热画像取用 / aspect 读写 / 画像蒸馏（mock LLM）
 // 用法: node test-profile.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
-import { apply } from './lib/index.js'
+import { apply, scopeOf } from './lib/index.js'
 import { MemoryStore } from './lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -8,6 +8,13 @@ import { tmpdir } from 'node:os'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
+
+console.log('== 0. scopeOf：cwd 优先 + workspaceRegistry fallback（v0.9.5） ==')
+check('有 cwd 用 basename', scopeOf({ meta: { cwd: 'D:\\proj\\mecha' } }) === 'mecha')
+check('无 cwd 回落 global', scopeOf({ id: 's1' }) === 'global')
+const registry = { list: () => [{ path: 'D:/work/dsh-memory', sessionIds: ['s1'] }, { path: 'D:/work/mecha', sessionIds: ['s2'] }] }
+check('无 cwd 走 workspaceRegistry 命中', scopeOf({ id: 's1' }, registry) === 'dsh-memory')
+check('registry 无此会话回落 global', scopeOf({ id: 's9' }, registry) === 'global')
 
 console.log('== 1. 预热画像取用：list type 过滤不受"最近 50 条"窗口挤压 ==')
 {
