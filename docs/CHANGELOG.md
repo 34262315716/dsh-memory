@@ -2,6 +2,27 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.4 — 会话工作目录分层（根治跨项目记忆串味）（2026-08-17）
+
+用户实证问题：在 dsh-memory 开发会话里，预热注入的却是机甲 AI 绘画记忆。查证根因：
+- 预热在 session-start 执行，此时**没有用户消息**，无法知道会话主题，只能注入"最近记忆"（最近=机甲）
+- **画像库 0 条**（profile 类型从未产生）——"画像优先"无画像可优
+- **121 条记忆全部 global scope**——无项目隔离
+- DSH 会话自带 **cwd**（SessionHeader.cwd 已查证，工具 exec 也有 agent）
+
+### 修复：scope 自动绑定会话工作目录
+- **`scopeOf(sessionOrAgent)`**：cwd basename → scope（无 cwd → global）
+- **写入分层**：turn/end 沉淀、memory_add 工具按当前会话 cwd 写 scope；**画像（profile）固定 global**（"用户是谁"跨项目适用）
+- **检索双 scope**：pre-step 注入、memory_search/list 按 `[当前项目 scope, global]` 查（存量 global 兼容为公共层）
+- **预热收窄**：画像全 scope 直取；非画像先取当前项目 scope，不足补 global（存量兼容）
+- **存量说明**：global 旧记忆无法自动归属项目（无 cwd 历史），随时间老化/手动清理；**新记忆立即分层**
+- **minScore 0.015 → 0.02**：跨领域弱命中更少混入
+- 顺手修复存量 bug：**向量路从未做 scope 过滤**（分层后必须）——vecSearch 结果补 scopeMatch
+
+### 验证
+- test-housekeeping 扩至 24 项（多 scope 检索/列表互不可见 + 双 scope 公共层）；全部测试 131 项全过
+- 部署副本已同步（md5 校验）；版本号 0.9.3 → 0.9.4
+
 ## v0.9.3 — 子代理审查修复批（画像 aspect 读回路 / 预热窗口挤压 / 蒸馏幂等）（2026-08-16）
 
 子代理对 v0.9.0~v0.9.2 深度审查（P0 无 / P1×1 / P2×5 / P3×6），全部修复：

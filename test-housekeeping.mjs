@@ -111,6 +111,29 @@ console.log('== 9. 迁移幂等：重开 store 不重复插入 ==')
   s2.close(); s3.close(); rmSync(dir4, { recursive: true, force: true })
 }
 
+console.log('== 10. 多 scope 检索/列表（项目隔离，v0.9.4） ==')
+{
+  const dir5 = mkdtempSync(join(tmpdir(), 'dsh-memory-sc-'))
+  const s = new MemoryStore(join(dir5, 't.db'), { embedder: new RuleEmbedder(256) })
+  await s.add({ layer: 'sm', scope: 'dsh-memory', content: '项目甲：reranker 接线完成', keywords: ['reranker'] })
+  await s.add({ layer: 'sm', scope: 'mecha', content: '项目乙：机甲提示词 v2', keywords: ['机甲'] })
+  await s.add({ layer: 'sm', scope: 'global', content: '公共层：用户画像偏好', keywords: ['画像'] })
+  // 单 scope 检索互不可见
+  const r1 = await s.search('reranker', { scope: 'dsh-memory', limit: 5, minScore: 0 })
+  const r2 = await s.search('reranker', { scope: 'mecha', limit: 5, minScore: 0 })
+  check('项目甲 scope 检索命中自己', r1.some((h) => h.content.includes('reranker')))
+  check('项目乙 scope 检索不到项目甲记忆', !r2.some((h) => h.content.includes('reranker')))
+  // 双 scope（项目 + global 公共层）：都能看到
+  const both = await s.search('reranker', { scope: ['dsh-memory', 'global'], limit: 5, minScore: 0 })
+  check('双 scope（项目+global）命中项目甲', both.some((h) => h.content.includes('reranker')))
+  const bothMe = await s.search('机甲', { scope: ['mecha', 'global'], limit: 5, minScore: 0 })
+  check('双 scope（项目乙+global）不含项目甲记忆', !bothMe.some((h) => h.content.includes('reranker')))
+  // list 多 scope
+  const ls = s.list({ scope: ['dsh-memory', 'global'], limit: 10 })
+  check('list 多 scope 返回项目甲+公共层（不含项目乙）', ls.some((m) => m.scope === 'dsh-memory') && ls.some((m) => m.scope === 'global') && !ls.some((m) => m.scope === 'mecha'))
+  s.close(); rmSync(dir5, { recursive: true, force: true })
+}
+
 store.close()
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
