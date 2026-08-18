@@ -63,6 +63,24 @@ DSH 运行时 ──session/event──▶ 写入侧 ──沉淀/去重──�
 
 📚 详细设计：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md) · 路线图（v0.9 系列执行计划）：[`docs/ROADMAP.md`](docs/ROADMAP.md)
 
+### 模块结构（v0.9.7 解耦重构后）
+
+```
+lib/index.js           装配壳：settings/init/Web API/管线/工具/ctx.memory（253 行）
+lib/config.js          配置 schema + 默认值
+lib/util.js            纯函数：scopeOf / formatNow / 注入渲染 / 消息提取 / 凭据读取
+lib/store.js           存储层（sqlite + 检索 + 图谱 + 世界线 + 事件 + 日志）
+lib/embedder.js        Embedder/Reranker seam（降级链）
+lib/refiner.js         LLM 蒸馏提取
+lib/graph-snapshot.js  记忆级图谱快照投影
+lib/pipelines/        write（沉淀）/ inject（注入）/ preheat（预热）——工厂化，依赖显式注入
+lib/tools/            工具注册（time / memory / housekeeping / graph 分域 + shared + index）
+client/index.jsx       客户端插槽装配壳
+client/settings.jsx    GUI 设置面板
+client/graph.jsx       GUI 记忆图谱（力导向画布）
+client/logs.jsx        GUI 记忆日志面板
+```
+
 🏔 里程碑（compaction-smart，502 行六维度压缩方案）：[`D:\AItool\dsh-work\compaction-smart-proposal.md`](D:\AItool\dsh-work\compaction-smart-proposal.md)
 
 ## 📦 安装

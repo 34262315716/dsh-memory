@@ -2,6 +2,19 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.7 — 模块结构解耦重构（零行为改动）（2026-08-18）
+
+用户打开代码后提问"是否过于集中、有没有解耦"，经确认做了纯文件级重组（无引入框架、无行为改动）：
+
+- **lib/ 拆分为装配壳 + 单一职责模块**：`index.js` 1778 行 → 253 行，只做装配（settings/init/Web API/管线/工具/ctx.memory）
+  - `config.js`（Config schema）/ `util.js`（纯函数：scopeOf/formatNow/注入渲染/消息提取/凭据读取，抽出死代码线）
+  - `refiner.js`（LLM 蒸馏）/ `graph-snapshot.js`（图谱快照投影，原直摸 `store.db` 的封装修复点已隔离到该投影模块）
+  - `pipelines/`：write（turn/end 沉淀+价值门+去重+管家）、inject（pre-step 检索注入）、preheat（会话预热）——工厂化，依赖（store/getCfg/wsRegistry/logStore）显式注入
+  - `tools/`：registerTools 900 行 → 按域拆分为 time / memory / housekeeping / graph + shared（safeRegister/logStore）+ index
+- **client/ 拆三文件**：settings.jsx（设置面板）/ graph.jsx（图谱画布）/ logs.jsx（日志面板），`index.jsx` 只留插槽装配
+- **顺带**：部署副本陈旧的 embedder.js（缺 v0.8.4 rerank LRU/部分缓存修复）随本次同步为最新
+- 验证：8 套测试 149 项全过（与基线一致）；client bundle 重建（81KB 同量级）；git 有提交锚点可回退
+
 ## v0.9.6 — 热修复：v0.9.5 埋点作用域 bug（memory_add 等工具 ReferenceError）（2026-08-17）
 
 重启验证时业务发现 `memory_add` 报 "wsRegistry is not defined"——v0.9.5 埋点把 apply 局部变量（`wsRegistry`、`logStore`）用进了**模块级 `registerTools` 函数**的工具闭包，工具 execute 运行时 ReferenceError。
