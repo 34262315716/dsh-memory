@@ -24,6 +24,7 @@
 - **主流可落地（分层+检索+蒸馏）**：MemGPT(2310.08560) · Generative Agents(2304.03442) · HippoRAG(2405.14831) · AgeMem(2601.01885) · HiMem(2601.06377) · Membox(2601.03785) · InfiniMemory(2606.10677) · GAM(2604.12285) · MemRefine(2606.13177) · rate-distortion 压缩(2607.08032) · MemArchitect(2603.18330) · Proactive Memory Agent(2607.08716) · InfiAgent(2601.03204) · NeuSymMS(2605.17596) · MSCE(2607.16621) · M⋆(2604.11811)
 - **综述**：memor mechanism survey(2404.13501) · Memory for Autonomous LLM Agents(2603.07670) · Rethinking Memory(2505.00675) · From Storage to Experience(2605.06716)
 - **另类/难落地（自训模型或硬件依赖，暂不纳入工程讨论）**：Titans/TTT(2501.00663, 2608.01672) · DNC(2016 Nature) · SNN/神经形态(EMBER 2604.12167, BrainTransformers 2410.14687) · Memory-R1(2508.19828, RL)
+- **记忆技能 / meta-memory 方向**：MemSkill（[repo](https://github.com/ViktorAxelsen/MemSkill)，[论文 2602.02474](https://arxiv.org/abs/2602.02474)，Apache-2.0）——"怎么记"本身进化为可学习/复用/演化的技能（controller RL 训练 + operation bank + designer 挖困难案例 + 跨数据集零训练迁移）。**训练驱动，难以纯工程落地**；洞见是"记忆操作（提取/保留/遗忘策略）可从写死管线升级为按上下文挑选的可演化策略"。未评估是否对 dsh-memory 有借鉴价值。
 - 判定标准：**只要 "LLM API 调用 + 存储(向量/关系/图) + 规则/调度逻辑" 就能复刻 ⟶ 可落地；凡需改权重/RL/特殊硬件 ⟶ 不纳入**。
 
 ## 四、欠账（待办，未做）
