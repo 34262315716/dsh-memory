@@ -2,6 +2,24 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.8 — 图谱派生数据增量构建 + 真向量检索实证（2026-08-19）
+
+用户三连需求：① 记忆库有过期结论需更新 ② 向量语义检索"今天做完" ③ 图谱每次启动全量重建不优雅，要增量。
+
+### ① 记忆库更新（scope 分层旧待办实锤作废）
+- 旧的「132 条 100% global、分层从未生效」待办已过时：实测生产库 **162 条**记忆 global 136 / **dsh-memory 23** / **金花的秘密 2**；预热日志 23:28/23:31 正确切到项目 scope（workspaceRegistry fallback 生效）。相关过时记忆已删除，替换为今日实锤决策。
+- **真向量语义检索确认为已在生产在线**（非本次新做）：config 默认 `embedding.provider: 'remote'`，生产 embedder=remote（硅基流动 Qwen3-VL-Embedding-8B）**dim 4096**，162/162 记忆全有向量；本次用「无词面重合的语义查询」实测命中 Git 路径/预设类记忆，实证向量路真实生效。
+
+### ② 图谱增量构建（本轮核心改动）
+- **主题聚类增量**：新表 `theme_clusters`（簇质心/词频/成员数持久化）+ `memories.cluster_id` 归属标记；`themeMemories({ incremental })` 只处理未归簇新记忆，可跨重启续跑——不再每次启动对全部记忆重聚 + 全量重嵌入。`incremental=false` 保留全量重建（维度迁移/手动）；簇质心维度与当前 embedder 失配（rule↔remote）时自动清簇重聚（含"全部已归簇但维度失效"场景）。
+- **事件检测增量**：新增 `detectEventsIncremental`，meta `event_scan_at` 水位线——无新增记忆直接跳过、事件表保持现状；有新增只重建**尾部窗口**（tailFrom = 最早新增时刻 − gapMs 起），旧事件保留。全量 `detectEvents` 保留（测试 / memory_events detect=true 强制重建用）。
+- 启动（`lib/index.js`）与管家（`lib/pipelines/write.js`）事件路径切到增量版。
+- 备注：升级后首次启动做一次性 onboarding（全量归簇 + 建事件水位线），此后恒为增量。
+
+### 验证
+- 9 套测试 **170 项**全过：8 套老回归 149 项 + 新增 `test-incremental.mjs` 21 项（增量主题/事件、水位线跳过、尾部合并、旧事件保留、维度迁移自愈、全量 vs 增量对齐）。
+- 版本 0.9.7 → 0.9.8；README/ROADMAP/ARCHITECTURE 已同步；部署副本 md5 校验同步；⚠️ **需重启 EAC 生效**。
+
 ## v0.9.7 — 模块结构解耦重构（零行为改动）（2026-08-18）
 
 用户打开代码后提问"是否过于集中、有没有解耦"，经确认做了纯文件级重组（无引入框架、无行为改动）：

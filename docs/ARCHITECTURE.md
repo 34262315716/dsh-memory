@@ -101,7 +101,7 @@ dsh-memory/
 ## 2. 数据模型（memory.db，WAL + STRICT）
 
 ```sql
-memories          -- 记忆身份 + 活跃切片：id/layer(ep|sm)/type(含 profile)/scope/content/keywords/strength/last_access/created_at/updated_at/theme/profile_aspect
+memories          -- 记忆身份 + 活跃切片：id/layer(ep|sm)/type(含 profile)/scope/content/keywords/strength/last_access/created_at/updated_at/theme/profile_aspect/cluster_id（主题聚类归属标记，v0.9.8）
 memory_versions   -- 世界线版本：memory_id/revision/content/keywords/valid_from/valid_to/superseded_by（活跃版唯一部分索引）
 memories_fts      -- FTS5 虚拟表（trigram tokenizer，中文子串）
 memory_vectors    -- sqlite-vec vec0（维度随 embedder，rowid 与 memories 对齐）
@@ -112,6 +112,7 @@ communities / community_members -- 社区聚类（label propagation）
 events / event_members          -- 事件分类（时间线扫描产物；v0.9.0）
 meta              -- 键值元数据（管家时间戳、蒸馏幂等记录）
 logs              -- 运行日志（全链路埋点；v0.9.5）
+theme_clusters    -- 主题簇持久化（质心/词频/成员数；v0.9.8 增量聚类）
 ```
 
 - **rowid 对齐**：memories 隐式 rowid = FTS5 与 vec0 行键，三表同事务同步，删除级联清理。
@@ -175,6 +176,7 @@ query → tokenize（英文词≥3 + 中文 bigram）
 - **实体骨架**（nodes/edges）：`graphLink` 建 entity 节点 + mentions 全连接；停用词过滤（`GRAPH_STOP_WORDS`，泛词不成节点）；ep 快照不建图
 - **遍历**：`memoryLinkNeighbors`/`memoryPath`（记忆级双向 BFS）/ `neighborsK`（k-hop CTE）/ `path`（节点级 BFS）
 - **聚类/分类维度**：`detectCommunities`（label propagation）· 记忆级主题聚类 `themeMemories`（向量凝聚，label=高频词）· 事件分类 `detectEvents`（时间线扫描，见 §2 events 表）
+- **v0.9.8 增量**：主题聚类持久化到 `theme_clusters`（质心/词频/成员数）+ `memories.cluster_id`，只归未归簇新记忆（跨重启续跑；维度迁移自动清簇重聚）；事件检测走 `detectEventsIncremental`（meta `event_scan_at` 水位线，无新增跳过、只重建尾部窗口）——启动/巡检不再全量重算。
 - **GUI 数据**：`/dsh-memory/graph` → `lib/graph-snapshot.js` 投影（节点含 theme/type/versions/eventId/aspect，即"四维蠕虫"的时间痕迹）
 
 ## 7. 遗忘曲线
@@ -218,7 +220,7 @@ schema 默认值 ← 组合层（cordis.patch.yml config = base）← 用户层�
 2. **依赖注入**：pipelines 与 tools 只通过 `deps`/参数拿 `store/getCfg/wsRegistry/logStore`；`lib/tools/shared.js` 提供统一 `makeSafeRegister`/`makeLogStore`。
 3. **运行日志**：所有关键动作（init/preheat/inject/write/refined/fallback/housekeeping/events.detect/links.fix/tool.*）走 `store.log`，级别 + 事件 + scope + 详情，惰性裁剪至 maxRows；日志失败绝不影响主流程。
 4. **scope 三态**：`cwd → workspaceRegistry → global`（`lib/util.js scopeOf`），唯一判据，禁止散布重复逻辑。
-5. **测试**：8 套 149 项（README §测试）——`test-profile`/`test-crash-safety` 依赖 `@deepseek-ai`，需在部署副本环境或在 `node_modules` 挂 junction 指向 harness 的 `@deepseek-ai` 后于源码目录运行。`lib/store.js`/`lib/embedder.js` 有独立 seam 单测，改动尊重测试。
+5. **测试**：9 套 170 项（含 test-incremental 21 项）（README §测试）——`test-profile`/`test-crash-safety` 依赖 `@deepseek-ai`，需在部署副本环境或在 `node_modules` 挂 junction 指向 harness 的 `@deepseek-ai` 后于源码目录运行。`lib/store.js`/`lib/embedder.js` 有独立 seam 单测，改动尊重测试。
 6. **版本与部署纪律**：每次改动 = 实现 + 测试 + CHANGELOG + 部署副本同步（md5 校验）+ 提交推送；改 `lib/` 或 client bundle 需重启 dsh web 生效。
 
 ## 11. 扩展指南（新需求"改这里"）
