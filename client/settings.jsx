@@ -57,6 +57,11 @@ const GRAPH_VIEW_FIELDS = [
   ['repulsion', '斥力倍率', '节点间斥力（0.2~2，默认 1；越大越松散）'],
   ['damping', '速度阻尼', '运动衰减（0.05~0.9，默认 0.3；越大越稳但更慢收敛）'],
   ['gravity', '中心引力', '孤立节点回中心拉力（0~0.05，默认 0.005）'],
+  ['depthAngle', '纵深角度°', '拖尾方向角（-180~180，默认 20；正=向右上纵深，越远越往上）'],
+  ['trailSegments', '拖尾段数', '每节点延长段数（0~12，默认 4；0=关闭纵深，纯视觉）'],
+  ['trailGap', '拖尾间距', '相邻延长段间距（2~120，默认 26；越大纵深拉得越长）'],
+  ['trailShrink', '拖尾缩放', '每深一层缩小倍率（0.4~0.95，默认 0.78；越小消失越快）'],
+  ['trailFade', '拖尾淡化', '每深一层透明度衰减（0.3~1，默认 0.82；越小越淡）'],
 ]
 
 /** 管家字段（housekeeping 子对象）。 */
@@ -67,7 +72,7 @@ const HOUSEKEEPING_FIELDS = [
   ['agingDays', '老化报告天数', '闲置超 N 天的低价值记忆进报告（7~365，默认 30）'],
 ]
 
-const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays'])
+const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity', 'depthAngle', 'trailSegments', 'trailGap', 'trailShrink', 'trailFade', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays'])
 
 function Field({ label, hint, children }) {
   return (
