@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline-suite:
+    name: 离线回归（不依赖 @deepseek-ai 私有包）
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: 安装依赖（跳过 DSH 私有 peer 依赖）
+        run: npm ci --omit=peer
+      - name: 跑离线套件
+        run: |
+          for t in test test-phase2 test-phase3 test-events test-housekeeping \
+                   test-incremental test-update-append test-edge-types test-keyword-filter; do
+            echo "== $t =="
+            node "$t.mjs" || exit 1
+          done
+      - name: 构建 client bundle（验证 client 可打包）
+        run: node build-client.mjs

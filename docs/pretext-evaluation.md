@@ -21,7 +21,7 @@
     const { height, lineCount } = layout(prepared, 320, 20)
     measureLineStats / walkLineRanges                       // 行宽/光标级信息
 
-## 3. 实测（本机 POC，D:\AItool\dsh-work\pretext-poc）
+## 3. 实测（本机 POC 目录，未随仓库分发）
 
 | 验证项 | 结果 |
 |---|---|
@@ -50,7 +50,7 @@
 
 - **当前不集成**：现有标签场景 ROI 低，102KB 换不了什么
 - **列入图谱增强备选**：触发条件 = 做「节点气泡多行标签」或「Canvas 详情卡片」时引入，封装 adapter（prepare 缓存 Map<text+font, handle> + layoutWithLines → 绘制）
-- POC 目录保留（D:\AItool\dsh-work\pretext-poc），决策后可直接复用
+- POC 目录保留于本机，决策后可直接复用（未随仓库分发）
 
 ## 附：另外两个同名项目（排除）
 

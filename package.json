@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory",
-  "description": "Advanced auto-memory plugin for DSH: layered memory + SQLite storage + graph skeleton + time dimension (worldline) + feature flags",
+  "description": "Advanced auto-memory plugin for DSH: layered memory (episodic/semantic/profile) + knowledge graph + worldline versioning + vector/RAG retrieval + incremental graph building",
   "version": "0.9.17",
   "type": "module",
   "main": "lib/index.js",
@@ -25,7 +25,9 @@
     }
   },
   "license": "MIT",
-  "private": true,
+  "keywords": ["dsh", "memory", "plugin", "rag", "knowledge-graph", "sqlite", "embedding", "worldline"],
+  "files": ["lib", "README.md", "LICENSE"],
+  "private": false,
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=0.1.0",
     "@deepseek-ai/dsh-llm": ">=0.1.0",
@@ -35,5 +37,8 @@
   },
   "dependencies": {
     "sqlite-vec": "^0.1.9"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12"
   }
 }

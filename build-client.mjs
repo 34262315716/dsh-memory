@@ -4,8 +4,14 @@
  *   window.__ModuleLoader__.load({ id, factory: (require) => {...} })
  * externals（@deepseek-ai/*、react、react/jsx-runtime）由 web 端 module table 提供。
  */
-import { build } from 'file:///D:/AItool/deepseek-harness/node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js'
 import { writeFileSync } from 'node:fs'
+// esbuild 优先从依赖解析（开源/CI）；作者本机开发环境无本地 esbuild，回退 harness 自带路径
+let build
+try {
+  ;({ build } = await import('esbuild'))
+} catch (e) {
+  ;({ build } = await import('file:///D:/AItool/deepseek-harness/node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js'))
+}
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 

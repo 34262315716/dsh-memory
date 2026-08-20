@@ -1,6 +1,6 @@
 # compaction-smart × dsh-memory 集成设计
 
-> 立项依据：[compaction-smart-proposal.md](D:/AItool/dsh-work/compaction-smart-proposal.md)（502 行，六维度精妙压缩方案）。
+> 立项依据：[compaction-smart-proposal.md](compaction-smart-proposal.md)（502 行，六维度精妙压缩方案）。
 > 本文把六维度落到 dsh-memory 现状：模块划分、表 DDL、事件流、转移协议、图谱接线、配置/开关、工具面、GUI、分期路线图。
 > 现状核对基于 lib/index.js / lib/store.js / client/index.jsx（v0.4.1）。
 

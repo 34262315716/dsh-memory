@@ -495,7 +495,7 @@ DSH 提供的原生机制恰好匹配：`agent/pre-step` 每步触发（不依�
 
 ## 里程碑：compaction-smart（2026-08-15 立项）
 
-> 里程碑文档：[`D:\AItool\dsh-work\compaction-smart-proposal.md`](D:\AItool\dsh-work\compaction-smart-proposal.md)（502 行，六维度设计）。
+> 里程碑文档：[`compaction-smart-proposal.md`](compaction-smart-proposal.md)（502 行，六维度设计）。
 
 六维度：① 内容感知分层价值判定（ValueClass）② **压缩 = 记忆转移闭环**（核心差异化：先进库再消失，与 dsh-memory 咬合）③ 结构化摘要（SummaryDocument schema）④ 渐进式多级压缩 ⑤ 自适应阈值（成本-收益平衡）⑥ 压缩世界线（非销毁、可展开）。
 

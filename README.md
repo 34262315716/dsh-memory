@@ -1,5 +1,7 @@
 # dsh-memory
 
+> **dsh-memory** — Advanced auto-memory plugin for DSH (DeepSeek Harness): layered memory (episodic / semantic / profile), knowledge graph, worldline versioning, vector + RAG retrieval, and incremental graph building. Local SQLite, MIT-licensed. (Body of this README is in Chinese.)
+
 DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触发**，agent 自主工作时每一步自动注入与当前任务相关的历史记忆，并在每个轮次结束时自动沉淀新记忆。
 
 > 核心诉求：记忆不只是"清单"，而是会生长的知识网络：分层 + 图谱 + 世界线（时间维度）+ 向量语义检索。
@@ -83,7 +85,7 @@ client/graph.jsx       GUI 记忆图谱（力导向画布）
 client/logs.jsx        GUI 记忆日志面板
 ```
 
-🏔 里程碑（compaction-smart，502 行六维度压缩方案）：[`D:\AItool\dsh-work\compaction-smart-proposal.md`](D:\AItool\dsh-work\compaction-smart-proposal.md)
+🏔 里程碑（compaction-smart，502 行六维度压缩方案）：[docs/compaction-smart-proposal.md](docs/compaction-smart-proposal.md)
 
 ## 📦 安装
 
