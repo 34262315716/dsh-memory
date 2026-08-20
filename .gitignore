@@ -1,13 +1,39 @@
 # 依赖与构建
 node_modules/
 *.tsbuildinfo
+*.tgz
+.npm/
 
-# 运行时数据（记忆数据库绝不入库）
+# 运行时数据（记忆数据库与一切派生数据绝不入库）
 *.db
+*.db-*
+*.db.*
 *.db-wal
 *.db-shm
 *.bak
+*.bak-*
 *.bak-inject
+
+# 凭据 / 密钥 / 隐私（绝不入库；即使误拷目录也被挡）
+*.credentials*
+.credentials*
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*secret*
+*token*
+
+# 本地临时 / 补丁 / 编辑器
+.tmp*
+*.tmp
+tmp/
+*.swp
+*~
+.vscode/
+.idea/
 
 # 抓取缓存
 .firecrawl/
@@ -18,6 +44,10 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 打包产物 / 本地快照
+dist/
+lib/client.js.map
 
 # GitNexus 索引缓存与注入的技能副本（analyze 时自动重建）
 .gitnexus/
