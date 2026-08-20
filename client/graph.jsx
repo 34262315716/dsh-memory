@@ -43,8 +43,9 @@ const EDGE_STYLE = {
 }
 const EDGE_ORDER = ["similarTo", "before", "mentions", "partOf", "causes", "solves", "supports", "contradicts"]
 const EDGE_LABEL = { similarTo: "语义相似", before: "时间演化", mentions: "实体共现", partOf: "部分属于", causes: "导致", solves: "解决", supports: "支持", contradicts: "矛盾" }
-// v0.9.14 idle 呼吸浮动：物理收敛后节点围绕平衡位做低频平滑浮动（活而不抖）的幅度（世界 px）
-const IDLE_AMP = 3.2
+// v0.9.16 idle 呼吸浮动：物理收敛后节点围绕平衡位做低频平滑浮动（活而不抖）。
+// 用"屏幕恒定像素"（除以 transform.k）——任意缩放级别都恒定可见，不再受全景缩小被吞掉
+const IDLE_SCREEN = 6
 
 /** 相对时间文案（中文）。 */
 function agoText(ts, now = Date.now()) {
@@ -126,7 +127,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const nodes = data.nodes.map((n) => {
       const p = init.positions.get(n.id) ?? [W() / 2 + (Math.random() - 0.5) * 60, H() / 2 + (Math.random() - 0.5) * 60]
       // 新旧色温：新记忆亮、旧记忆暗（时间作为第四维的视觉编码；库内相对映射）
-      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now), ph: Math.random() * Math.PI * 2, fq: 0.22 + Math.random() * 0.30 }
+      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now), ph: Math.random() * Math.PI * 2, fq: 0.18 + Math.random() * 0.24 }
     })
     const nodeById = new Map(nodes.map((n) => [n.id, n]))
     const edges = data.edges.map((e) => ({ ...e, a: nodeById.get(e.from), b: nodeById.get(e.to) })).filter((e) => e.a && e.b)
@@ -151,8 +152,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     // v0.9.14 idle 呼吸浮动：物理活跃（alpha 大）时浮动趋零，物理冷却后接管（低频平滑，无高频抖动）
     const tSec = () => performance.now() / 1000
     const floatK = () => (alpha > 0.05 ? 0 : 1 - alpha / 0.05)
-    const sx = (n) => n.x + Math.sin(tSec() * n.fq + n.ph) * IDLE_AMP * floatK()
-    const sy = (n) => n.y + Math.cos(tSec() * n.fq * 0.92 + n.ph) * IDLE_AMP * floatK()
+    const ampW = IDLE_SCREEN / transform.k   // 屏显恒定幅度（世界单位 = 屏幕像素 / zoom）
+    const sx = (n) => n.x + Math.sin(tSec() * n.fq + n.ph) * ampW * floatK()
+    const sy = (n) => n.y + Math.cos(tSec() * n.fq * 0.92 + n.ph) * ampW * floatK()
     const step = () => {
       alpha += (0 - alpha) * 0.028
       // 拖动期间维持模拟活跃（alpha 地板）：弹簧持续牵引，邻居弹性跟随拖点
