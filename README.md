@@ -15,6 +15,7 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触�
 | **向量语义检索** | `sqlite-vec` KNN 余弦 + FTS5 BM25 + 关键词三路 **RRF 融合**；扩展加载失败优雅降级；**reranker 后置精排**（RRF 候选 → 融合分 `w×RRF+(1-w)×rerank`，失败降级 RRF 零损失） |
 | **记忆图谱** | 实体节点 + 边（共现/因果/时间演化…）、k-hop 邻域扩散、BFS 最短路径、社区自动聚类；**力导向参数（弹簧/斥力/阻尼/引力）settings 可调、live 生效**；**记忆级边独立表（memory_links）**——GUI 投影直读、记忆级 BFS/邻域、旧实体边自动迁移；**时间维度可视化**：更新过的节点有金色年轮（环数=更新次数）、新旧色温（库内相对映射）、时间窗筛选、hover 时间标签 |
 | **增量构建 (v0.9.8)** | 主题聚类持久化簇（theme_clusters + cluster_id）+ 事件检测水位线（meta.event_scan_at）——启动/巡检不再全量重建派生数据，O(新增+尾部) 而非 O(全量) |
+| **联系显性化 (v0.9.11)** | 记忆级图谱显示多种联系：8 型边各配颜色/线型 + hover 边类型 + mentions 强共现（共享≥2 实体）；before 演化收紧（稀有实体+同主题），beforeAudit 审计清理假演化 |
 | **记忆管家** | 自动巡检（与对话轮数解耦：每沉淀 20 条记忆 或 距上次超 24h 触发，时间戳持久化）：全局去重扫描（余弦近重复）+ 老化报告（长期闲置低价值）；`memory_housekeeping` 工具 dryRun 默认只报告，可选自动合并几乎重复对 |
 | **事件分类** | 时间连续 + 因果相关（同主题/共享实体）的记忆聚簇——"这段记忆属于哪件事"（区别于 theme 的"在讲什么"）；时间线扫描纯 rule 算法，管家自动维护；`memory_events` 工具 + 图谱事件筛选/高亮 |
 | **画像分类** | 关于用户本人的稳定信息（身份/偏好/习惯/背景/沟通方式）单独分类：type=profile + aspect 子域；refiner 自动识别；**会话预热画像优先注入**（"用户是谁"优先于"最近干了啥"）；`memory_profile_distill` 画像蒸馏 |
@@ -198,6 +199,7 @@ node test-housekeeping.mjs # 管家/存储专项（30 项：去重/老化/meta/�
 node test-events.mjs    # 事件分类专项（21 项：时间线扫描/聚合切分/幂等/级联/gap 敏感/before 方向修正/主题过滤/空库）
 node test-incremental.mjs # 增量构建专项（21 项：主题聚类增量/事件水位线增量/尾部合并/旧事件保留/维度迁移自愈/全量对齐）
 node test-update-append.mjs # 更新拼接专项（9 项：更新内容无条件接末尾/持续追加/重复片段去重/+N 版本步进）
+node test-edge-types.mjs   # 边类型专项（9 项：mentions 共现快照/before 收紧/泛词与跨主题不连/beforeAudit dryRun+apply）
 node test-profile.mjs   # 画像分类专项（16 项：scopeOf 三态/预热画像/aspect 读写/蒸馏 mock LLM；需副本环境）
 node test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
                           # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行

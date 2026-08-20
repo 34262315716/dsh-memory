@@ -30,6 +30,20 @@ const AGE_WINDOWS = [
   ['old', '90 天以上'],
 ]
 
+/** 边类型 → 视觉样式（v0.9.11：让"多种联系方式"显性化——每型一色一型）。 */
+const EDGE_STYLE = {
+  similarTo:   { color: "#5b9bd5", dash: [],       w: 0.9,  alpha: 0.5 },
+  before:      { color: "#e07b39", dash: [],       w: 0.75, alpha: 0.45 },
+  mentions:    { color: "#8a8f98", dash: [3, 3],   w: 0.6,  alpha: 0.32 },
+  partOf:      { color: "#70ad47", dash: [],       w: 0.9,  alpha: 0.5 },
+  causes:      { color: "#e84118", dash: [],       w: 1.0,  alpha: 0.55 },
+  solves:      { color: "#20c997", dash: [],       w: 0.95, alpha: 0.55 },
+  supports:    { color: "#f3c623", dash: [],       w: 0.9,  alpha: 0.5 },
+  contradicts: { color: "#e056fd", dash: [4, 3],   w: 1.0,  alpha: 0.5 },
+}
+const EDGE_ORDER = ["similarTo", "before", "mentions", "partOf", "causes", "solves", "supports", "contradicts"]
+const EDGE_LABEL = { similarTo: "语义相似", before: "时间演化", mentions: "实体共现", partOf: "部分属于", causes: "导致", solves: "解决", supports: "支持", contradicts: "矛盾" }
+
 /** 相对时间文案（中文）。 */
 function agoText(ts, now = Date.now()) {
   const d = Math.max(0, Math.floor((now - ts) / (24 * 3600 * 1000)))
@@ -76,6 +90,7 @@ function layoutNodes(data, W, H) {
 const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef }) {
   const canvasRef = useRef(null)
   const hoverRef = useRef(null)
+  const hoverEdgeRef = useRef(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -233,13 +248,36 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       for (const e of edges) {
         const on = !focusId || e.a.id === focusId || e.b.id === focusId
         const dimmed = focusIds && !(focusIds.has(e.a.id) && focusIds.has(e.b.id))
-        ctx.globalAlpha = (focusId ? (on ? 0.9 : 0.1) : 0.45) * overallT * (dimmed ? 0.08 : 1)
-        ctx.strokeStyle = e.type === "similarTo" ? "#5b9bd5" : "#e07b39"
-        ctx.lineWidth = (e.type === "similarTo" ? 0.7 : 1.3) / transform.k
+        const st = EDGE_STYLE[e.type] ?? EDGE_STYLE.similarTo
+        ctx.globalAlpha = (focusId ? (on ? 1 : 0.08) : (st.alpha ?? 0.45)) * overallT * (dimmed ? 0.08 : 1)
+        ctx.strokeStyle = st.color
+        ctx.lineWidth = (st.w ?? 0.9) / transform.k
+        ctx.setLineDash(st.dash ?? [])
         ctx.beginPath()
         ctx.moveTo(e.a.x, e.a.y)
         ctx.lineTo(e.b.x, e.b.y)
         ctx.stroke()
+      }
+      ctx.setLineDash([])
+      // 边 hover 标签（v0.9.11）：鼠标悬停边时显示类型（+权重）
+      const hovE = hoverEdgeRef.current
+      if (hovE) {
+        const hx = (hovE.a.x + hovE.b.x) / 2, hy = (hovE.a.y + hovE.b.y) / 2
+        const lbl = (EDGE_LABEL[hovE.type] ?? hovE.type)
+          + (hovE.type === "similarTo" ? " " + Number(hovE.weight ?? 0).toFixed(2) : "")
+          + (hovE.type === "mentions" ? " ×" + (hovE.weight ?? 1) : "")
+        ctx.globalAlpha = 0.95
+        ctx.font = `${10 / transform.k}px sans-serif`
+        const tw = ctx.measureText(lbl).width
+        const ph = 10 / transform.k, pw = tw + 8 / transform.k
+        ctx.fillStyle = "rgba(18,18,22,0.88)"
+        ctx.beginPath()
+        if (ctx.roundRect) ctx.roundRect(hx - pw / 2, hy - ph - 8 / transform.k, pw, ph + 4 / transform.k, 3 / transform.k)
+        else ctx.rect(hx - pw / 2, hy - ph - 8 / transform.k, pw, ph + 4 / transform.k)
+        ctx.fill()
+        ctx.fillStyle = EDGE_STYLE[hovE.type]?.color ?? "#ccc"
+        ctx.textAlign = "center"
+        ctx.fillText(lbl, hx, hy - 3 / transform.k)
       }
       for (const n of nodes) {
         const isFocus = n.id === focusId
@@ -323,6 +361,16 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     raf = requestAnimationFrame(loop)
 
     // ---- 交互 ----
+    // 点到线段距离平方（边 hover）
+    const distToSegSq = (px, py, ax, ay, bx, by) => {
+      const dx = bx - ax, dy = by - ay
+      const l2 = dx * dx + dy * dy
+      let tt = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0
+      tt = Math.max(0, Math.min(1, tt))
+      const qx = ax + dx * tt, qy = ay + dy * tt
+      const ex = px - qx, ey = py - qy
+      return ex * ex + ey * ey
+    }
     const hitTest = (mx, my) => {
       const wx = (mx - transform.x) / transform.k, wy = (my - transform.y) / transform.k
       let best = null, bestD = (14 * 14) / (transform.k * transform.k)
@@ -360,6 +408,18 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         if (!raf) { draw() }
       } else {
         const n = hitTest(mx, my)
+        // 边 hover（v0.9.11）：鼠标最近处有边（屏幕阈值内）→ 显示类型标签
+        const wx = (mx - transform.x) / transform.k, wy = (my - transform.y) / transform.k
+        const eTh = 14 / transform.k
+        let bestE = null, bestEd = eTh * eTh
+        for (const e of edges) {
+          const d = distToSegSq(wx, wy, e.a.x, e.a.y, e.b.x, e.b.y)
+          if (d < bestEd) { bestEd = d; bestE = e }
+        }
+        if (bestE !== hoverEdgeRef.current) {
+          hoverEdgeRef.current = bestE
+          if (!raf) { raf = requestAnimationFrame(() => { draw(); raf = 0 }) }
+        }
         if ((n?.id ?? null) !== hoverRef.current) {
           hoverRef.current = n?.id ?? null
           if (!raf) { raf = requestAnimationFrame(() => { draw(); raf = 0 }) }
@@ -588,12 +648,15 @@ function MemoryGraphView({ scope }) {
           <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
         <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} />
-        <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2 }}>
-          <span style={{ color: "#5b9bd5" }}>— similarTo 语义相似</span>
-          <span style={{ marginLeft: 10, color: "#e07b39" }}>→ before 时间演化</span>
-          <span style={{ marginLeft: 10, color: "#ffd54f" }}>◎ 外环 = 更新过（环数 = 更新次数）</span>
-          <span style={{ marginLeft: 10 }}>色浅新 · 色深旧</span>
-          <span style={{ marginLeft: 10 }}>拖节点 · 平移 · 缩放 · 点击看详情</span>
+        <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2, display: "flex", flexWrap: "wrap", gap: 8, maxWidth: "72%", justifyContent: "flex-end" }}>
+          {EDGE_ORDER.filter((t2) => (filtered?.edges ?? []).some((e) => e.type === t2)).map((t2) => (
+            <span key={t2} style={{ color: EDGE_STYLE[t2].color }}>
+              {t2 === "similarTo" ? "—" : t2 === "before" ? "→" : t2 === "mentions" ? "· ·" : "—"}{" "}{EDGE_LABEL[t2]}
+            </span>
+          ))}
+          <span style={{ color: "#ffd54f" }}>◎ +N = 更新过 N 次</span>
+          <span>色浅新 · 色深旧</span>
+          <span>拖节点 · 平移 · 缩放 · 点边看类型</span>
         </div>
       </div>
       <DetailPanel selected={selected} data={filtered} />
