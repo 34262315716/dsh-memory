@@ -91,7 +91,9 @@ client/logs.jsx        GUI 记忆日志面板
 
 ```sh
 # 方式一：官方插件命令（推荐）
-dsh plugin --profile web add ./dsh-memory   # 本地路径，或发布到 npm 后按包名安装
+dsh plugin --profile web add dsh-advanced-memory   # 已发布到 npm，按包名安装
+# 开发期也可用本地路径：
+#   dsh plugin --profile web add ./dsh-memory
 
 # 方式二：手动
 # 1) 复制本目录到 C:\Users\<user>\.dsh\profiles\web\node_modules\dsh-memory\

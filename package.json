@@ -1,5 +1,5 @@
 {
-  "name": "dsh-memory",
+  "name": "dsh-advanced-memory",
   "description": "Advanced auto-memory plugin for DSH: layered memory (episodic/semantic/profile) + knowledge graph + worldline versioning + vector/RAG retrieval + incremental graph building",
   "version": "0.9.17",
   "type": "module",
