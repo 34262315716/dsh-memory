@@ -1,12 +1,24 @@
 // 防崩溃容错实测：mock ctx 驱动 apply()，验证 4 个失败场景不致命
 // 用法: node test-crash-safety.mjs
 import { apply } from './lib/index.js'
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, rmSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
+
+/** 从 lib/tools/*.js 源码提取工具名清单（抗漂移：以后加工具自动对齐，漏注册自动报警）。 */
+function sourceToolNames() {
+  const dir = join(dirname(fileURLToPath(import.meta.url)), 'lib', 'tools')
+  const names = []
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.js') && x !== 'index.js' && x !== 'shared.js')) {
+    const src = readFileSync(join(dir, f), 'utf8')
+    for (const m of src.matchAll(/name:\s*'([a-z0-9_]+)'/g)) names.push(m[1])
+  }
+  return [...new Set(names)].sort()
+}
 
 /** 构造 mock ctx：settings 可配置抛错；tools 对指定工具名抛错；on 收集事件；inject 立即回调。 */
 function makeCtx({ settingsThrow = false, failTool = null, dbFile } = {}) {
@@ -98,9 +110,10 @@ console.log('== D. 正常路径：全部工具注册 + 事件监听挂载 ==')
   let threw = false
   try { await apply(ctx, baseCfg(join(dir, 't.db'))) } catch (e) { threw = true; console.log('  ❌ 抛错: ' + e.message) }
   check('正常路径不抛错', !threw)
-  const expected = ['system_now', 'memory_add', 'memory_search', 'memory_forget', 'memory_list', 'memory_stats', 'memory_merge', 'memory_purge', 'memory_housekeeping', 'memory_events', 'memory_profile_distill', 'memory_graph_neighbors', 'memory_graph_path', 'memory_graph_link', 'memory_graph_unlink', 'memory_graph_node', 'memory_graph_communities', 'memory_versions', 'memory_rollback', 'memory_reembed']
+  const expected = sourceToolNames()
   const missing = expected.filter((n) => !ctx._registeredTools.includes(n))
-  check(`全部 ${expected.length} 个工具注册（缺: ${missing.join(',') || '无'}）`, missing.length === 0)
+  const extra = ctx._registeredTools.filter((n) => !expected.includes(n))
+  check(`工具按源码注册 ${expected.length} 个（缺: ${missing.join(',') || '无'} · 多余: ${extra.join(',') || '无'}）`, missing.length === 0 && extra.length === 0)
   check('事件监听挂载（session/event + pre-step + session-start）', Boolean(ctx._events['session/event']) && Boolean(ctx._events['agent/pre-step']) && Boolean(ctx._events['agent/session-start']))
   ctx._events['dispose']?.()
   rmSync(dir, { recursive: true, force: true })
