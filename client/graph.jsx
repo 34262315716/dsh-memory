@@ -43,10 +43,6 @@ const EDGE_STYLE = {
 }
 const EDGE_ORDER = ["similarTo", "before", "mentions", "partOf", "causes", "solves", "supports", "contradicts"]
 const EDGE_LABEL = { similarTo: "语义相似", before: "时间演化", mentions: "实体共现", partOf: "部分属于", causes: "导致", solves: "解决", supports: "支持", contradicts: "矛盾" }
-// v0.9.16 idle 呼吸浮动：物理收敛后节点围绕平衡位做低频平滑浮动（活而不抖）。
-// 用"屏幕恒定像素"（除以 transform.k）——任意缩放级别都恒定可见，不再受全景缩小被吞掉
-const IDLE_SCREEN = 6
-
 /** 相对时间文案（中文）。 */
 function agoText(ts, now = Date.now()) {
   const d = Math.max(0, Math.floor((now - ts) / (24 * 3600 * 1000)))
@@ -127,7 +123,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const nodes = data.nodes.map((n) => {
       const p = init.positions.get(n.id) ?? [W() / 2 + (Math.random() - 0.5) * 60, H() / 2 + (Math.random() - 0.5) * 60]
       // 新旧色温：新记忆亮、旧记忆暗（时间作为第四维的视觉编码；库内相对映射）
-      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now), ph: Math.random() * Math.PI * 2, fq: 0.18 + Math.random() * 0.24 }
+      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now) }
     })
     const nodeById = new Map(nodes.map((n) => [n.id, n]))
     const edges = data.edges.map((e) => ({ ...e, a: nodeById.get(e.from), b: nodeById.get(e.to) })).filter((e) => e.a && e.b)
@@ -149,12 +145,6 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     let dragNode = null
     const transform = { x: 0, y: 0, k: 1 }
     const heat = (a) => { alpha = Math.max(alpha, a) }
-    // v0.9.14 idle 呼吸浮动：物理活跃（alpha 大）时浮动趋零，物理冷却后接管（低频平滑，无高频抖动）
-    const tSec = () => performance.now() / 1000
-    const floatK = () => (alpha > 0.05 ? 0 : 1 - alpha / 0.05)
-    const ampW = IDLE_SCREEN / transform.k   // 屏显恒定幅度（世界单位 = 屏幕像素 / zoom）
-    const sx = (n) => n.x + Math.sin(tSec() * n.fq + n.ph) * ampW * floatK()
-    const sy = (n) => n.y + Math.cos(tSec() * n.fq * 0.92 + n.ph) * ampW * floatK()
     const step = () => {
       alpha += (0 - alpha) * 0.028
       // 拖动期间维持模拟活跃（alpha 地板）：弹簧持续牵引，邻居弹性跟随拖点
@@ -265,15 +255,15 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.lineWidth = (st.w ?? 0.9) / transform.k
         ctx.setLineDash(st.dash ?? [])
         ctx.beginPath()
-        ctx.moveTo(sx(e.a), sy(e.a))
-        ctx.lineTo(sx(e.b), sy(e.b))
+        ctx.moveTo(e.a.x, e.a.y)
+        ctx.lineTo(e.b.x, e.b.y)
         ctx.stroke()
       }
       ctx.setLineDash([])
       // 边 hover 标签（v0.9.11）：鼠标悬停边时显示类型（+权重）
       const hovE = hoverEdgeRef.current
       if (hovE) {
-        const hx = (sx(hovE.a) + sx(hovE.b)) / 2, hy = (sy(hovE.a) + sy(hovE.b)) / 2
+        const hx = (hovE.a.x + hovE.b.x) / 2, hy = (hovE.a.y + hovE.b.y) / 2
         const lbl = (EDGE_LABEL[hovE.type] ?? hovE.type)
           + (hovE.type === "similarTo" ? " " + Number(hovE.weight ?? 0).toFixed(2) : "")
           + (hovE.type === "mentions" ? " ×" + (hovE.weight ?? 1) : "")
@@ -303,7 +293,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 1) * ease * (dimmed ? 0.12 : 1)
         ctx.beginPath()
         const r = (4 + Math.min(n.degree, 14) * 0.55) / Math.sqrt(transform.k) * ease
-        ctx.arc(sx(n), sy(n), r, 0, Math.PI * 2)
+        ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
         ctx.fillStyle = n.color
         ctx.fill()
         // 版本环（四维蠕虫的时间痕迹）：更新过几次 = 几圈年轮（封顶 3 圈）
@@ -312,7 +302,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           const step = 3.2 / Math.sqrt(transform.k)
           for (let ri = 0; ri < rings; ri++) {
             ctx.beginPath()
-            ctx.arc(sx(n), sy(n), r + 3 + ri * step, 0, Math.PI * 2)
+            ctx.arc(n.x, n.y, r + 3 + ri * step, 0, Math.PI * 2)
             ctx.strokeStyle = "#ffd54f"
             ctx.lineWidth = 1.3 / Math.sqrt(transform.k)
             ctx.stroke()
@@ -322,7 +312,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         if ((n.versions ?? 1) > 1) {
           const cnt = (n.versions ?? 1) - 1
           const br = 7.5 / transform.k
-          const bx = sx(n) + r * 0.9, by = sy(n) - r * 0.9
+          const bx = n.x + r * 0.9, by = n.y - r * 0.9
           ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 0.95) * ease * (dimmed ? 0.12 : 1)
           ctx.beginPath()
           ctx.arc(bx, by, br, 0, Math.PI * 2)
@@ -347,14 +337,14 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           ctx.font = (10 / transform.k) + "px sans-serif"
           ctx.textAlign = "center"
           ctx.fillStyle = "#ddd"
-          ctx.fillText(tag, sx(n), sy(n) - r - 10 / transform.k)
+          ctx.fillText(tag, n.x, n.y - r - 10 / transform.k)
         }
         if (transform.k > 0.65 || isFocus) {
           ctx.globalAlpha = (isFocus || !focusId ? 1 : 0.3) * ease
           ctx.fillStyle = "#ccc"
           ctx.font = (10 / transform.k) + "px sans-serif"
           ctx.textAlign = "center"
-          ctx.fillText(n.label.slice(0, 9), sx(n), sy(n) + r + 11 / transform.k)
+          ctx.fillText(n.label.slice(0, 9), n.x, n.y + r + 11 / transform.k)
         }
       }
       ctx.globalAlpha = 1
@@ -363,8 +353,10 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     drawRef.current = draw
 
     const loop = () => {
-      // 物理只在"热"时步进（省 O(n²) CPU）；冷却后交棒给 idle 呼吸浮动（低频平滑，活而不抖）
-      if (alpha > 0.008 || dragNode) step()
+      // v0.9.17 实时持续物理：低活跃度地板（0.02）保底，力导向一直运行、永不冻结；
+      // 打开已收敛（warmup），故只做缓慢弹性律动，无 v0.9.13 的高频抖动
+      alpha = Math.max(alpha, 0.02)
+      step()
       draw()
       raf = requestAnimationFrame(loop)
     }
@@ -385,7 +377,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const wx = (mx - transform.x) / transform.k, wy = (my - transform.y) / transform.k
       let best = null, bestD = (14 * 14) / (transform.k * transform.k)
       for (const n of nodes) {
-        const dx = sx(n) - wx, dy = sy(n) - wy
+        const dx = n.x - wx, dy = n.y - wy
         const d2 = dx * dx + dy * dy
         if (d2 < bestD) { bestD = d2; best = n }
       }
@@ -423,7 +415,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         const eTh = 14 / transform.k
         let bestE = null, bestEd = eTh * eTh
         for (const e of edges) {
-          const d = distToSegSq(wx, wy, sx(e.a), sy(e.a), sx(e.b), sy(e.b))
+          const d = distToSegSq(wx, wy, e.a.x, e.a.y, e.b.x, e.b.y)
           if (d < bestEd) { bestEd = d; bestE = e }
         }
         if (bestE !== hoverEdgeRef.current) {
