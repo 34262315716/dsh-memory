@@ -44,7 +44,7 @@ const EDGE_STYLE = {
 const EDGE_ORDER = ["similarTo", "before", "mentions", "partOf", "causes", "solves", "supports", "contradicts"]
 const EDGE_LABEL = { similarTo: "语义相似", before: "时间演化", mentions: "实体共现", partOf: "部分属于", causes: "导致", solves: "解决", supports: "支持", contradicts: "矛盾" }
 // v0.9.14 idle 呼吸浮动：物理收敛后节点围绕平衡位做低频平滑浮动（活而不抖）的幅度（世界 px）
-const IDLE_AMP = 1.2
+const IDLE_AMP = 3.2
 
 /** 相对时间文案（中文）。 */
 function agoText(ts, now = Date.now()) {
@@ -126,7 +126,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const nodes = data.nodes.map((n) => {
       const p = init.positions.get(n.id) ?? [W() / 2 + (Math.random() - 0.5) * 60, H() / 2 + (Math.random() - 0.5) * 60]
       // 新旧色温：新记忆亮、旧记忆暗（时间作为第四维的视觉编码；库内相对映射）
-      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now), ph: Math.random() * Math.PI * 2, fq: 0.30 + Math.random() * 0.34 }
+      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now), ph: Math.random() * Math.PI * 2, fq: 0.22 + Math.random() * 0.30 }
     })
     const nodeById = new Map(nodes.map((n) => [n.id, n]))
     const edges = data.edges.map((e) => ({ ...e, a: nodeById.get(e.from), b: nodeById.get(e.to) })).filter((e) => e.a && e.b)
@@ -215,9 +215,10 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     }
 
     // ---- 打开动画：预热模拟 → 立即全景 → 从中心向两边平滑显现 ----
-    // 1) 预热：v0.9.13 加强到 140 步，打开面板时节点已"自动找好位置"（接近力导向平衡），
-    //    不再从环形初始位置慢慢爬——入场只是淡入放大，位置一步到位
-    for (let i = 0; i < 140; i++) step()
+    // 1) 预热：跑到力导向真正收敛（alpha 冷却到阈值）——打开面板时刻节点已在平衡位，
+    //    不再从固定位置慢慢迁移到平衡；入场只是淡入放大。
+    let warm = 0
+    while (warm < 800 && alpha > 0.006) { step(); warm++ }
     // 2) 立即全景（不再等模拟收敛后才跳变缩放）
     fitToView()
     // 3) 显现动画参数：节点按距视口中心距离延迟淡入+放大（中心先亮，向两边扩散）
