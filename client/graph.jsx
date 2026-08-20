@@ -208,8 +208,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     }
 
     // ---- 打开动画：预热模拟 → 立即全景 → 从中心向两边平滑显现 ----
-    // 1) 预热：先离线跑 40 步模拟（首帧即接近收敛的稳定布局，消除"环形展开抖动"）
-    for (let i = 0; i < 40; i++) step()
+    // 1) 预热：v0.9.13 加强到 140 步，打开面板时节点已"自动找好位置"（接近力导向平衡），
+    //    不再从环形初始位置慢慢爬——入场只是淡入放大，位置一步到位
+    for (let i = 0; i < 140; i++) step()
     // 2) 立即全景（不再等模拟收敛后才跳变缩放）
     fitToView()
     // 3) 显现动画参数：节点按距视口中心距离延迟淡入+放大（中心先亮，向两边扩散）
@@ -354,9 +355,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const loop = () => {
       step()
       draw()
-      // 拖动期间循环永续（节点跟随不冻结）；冷却且无拖动时停帧省 CPU
-      if (alpha > 0.008 || dragNode) raf = requestAnimationFrame(loop)
-      else raf = 0
+      // v0.9.13 持续运动：alpha 地板保底（不冷却停帧），图谱一直保持轻呼吸/缓慢移动——"活"的图谱
+      alpha = Math.max(alpha, 0.028)
+      raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
 

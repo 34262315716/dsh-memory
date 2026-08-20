@@ -73,6 +73,31 @@ check('apply：假演化边已停用（valid_to 置位）', audit1.removed >= 1 
 const activeABHist = store.db.prepare("SELECT COUNT(*) c FROM memory_links WHERE type='before' AND from_memory=? AND to_memory=?").get(a, b).c
 check('历史保留（valid_to 置位不销毁）', activeABHist === 1)
 
+
+console.log('== 5. reclassifyBefore：假演化归到正确类型 ==')
+// 无关对：x1→x2 零稀有实体共享（不同主题）→ 应去激活
+const x1 = await store.add({ layer: 'sm', scope: 'test', content: '无关甲', keywords: ['uniqX'] })
+const x2 = await store.add({ layer: 'sm', scope: 'test', content: '无关乙', keywords: ['uniqY'] })
+store.graphLink(x1, ['uniqX'])
+store.graphLink(x2, ['uniqY'])
+store.db.prepare('UPDATE memories SET theme = ? WHERE id = ?').run('UX', x1)
+store.db.prepare('UPDATE memories SET theme = ? WHERE id = ?').run('UY', x2)
+store.link(x1, x2, 'before', 1)
+// 弱共现对：c1→d1 共享 1 稀有实体 cc1 → 应归入 mentions
+const c1 = await store.add({ layer: 'sm', scope: 'test', content: '共现甲', keywords: ['cc1'] })
+const d1 = await store.add({ layer: 'sm', scope: 'test', content: '共现乙', keywords: ['cc1'] })
+store.graphLink(c1, ['cc1', 'cd0'])
+store.graphLink(d1, ['cc1', 'cd1'])
+store.link(c1, d1, 'before', 1)
+const rc = store.reclassifyBefore()   // dryRun
+check('共享1稀有 → 改判 mentions（weight=1）', rc.toMentions.some((x) => x.from === c1 && x.to === d1 && x.weight === 1))
+check('零稀有共享 → 无关停用', rc.toRemove.some((x) => x.from === x1 && x.to === x2))
+const rc2 = store.reclassifyBefore({ apply: true })
+check('改判落库：c1→d1 before 停用', store.db.prepare("SELECT COUNT(*) c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory=? AND to_memory=?").get(c1, d1).c === 0)
+check('改判落库：c1→d1 mentions 活跃', store.db.prepare("SELECT COUNT(*) c FROM memory_links WHERE type='mentions' AND valid_to IS NULL AND from_memory=? AND to_memory=?").get(c1, d1).c === 1)
+check('无关 x1→x2 before 停用', store.db.prepare("SELECT COUNT(*) c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory=? AND to_memory=?").get(x1, x2).c === 0)
+check('真演化 e1→e2 before 保留', store.db.prepare("SELECT COUNT(*) c FROM memory_links WHERE type='before' AND valid_to IS NULL AND from_memory=? AND to_memory=?").get(e1, e2).c === 1)
+
 store.close()
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
