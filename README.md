@@ -197,6 +197,7 @@ node test-embedder.mjs # 嵌入/重排 seam 单测（14 项：rule/remote/缓存
 node test-housekeeping.mjs # 管家/存储专项（30 项：去重/老化/meta/触发/touch/迁移幂等/多 scope/日志）
 node test-events.mjs    # 事件分类专项（21 项：时间线扫描/聚合切分/幂等/级联/gap 敏感/before 方向修正/主题过滤/空库）
 node test-incremental.mjs # 增量构建专项（21 项：主题聚类增量/事件水位线增量/尾部合并/旧事件保留/维度迁移自愈/全量对齐）
+node test-update-append.mjs # 更新拼接专项（9 项：更新内容无条件接末尾/持续追加/重复片段去重/+N 版本步进）
 node test-profile.mjs   # 画像分类专项（16 项：scopeOf 三态/预热画像/aspect 读写/蒸馏 mock LLM；需副本环境）
 node test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
                           # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行

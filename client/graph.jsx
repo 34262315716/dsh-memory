@@ -73,7 +73,7 @@ function layoutNodes(data, W, H) {
  *  交互：拖节点（固定 + 重新加热）、拖背景平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击选中
  *  性能：单 Canvas 每帧整绘（数百节点 <5ms）；选中/hover 经 ref 传入，组件零重渲染
  */
-const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef, depth }) {
+const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef }) {
   const canvasRef = useRef(null)
   const hoverRef = useRef(null)
 
@@ -130,15 +130,6 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const maxDeg = Math.max(...nodes.map((n) => n.degree), 1)
     let dragNode = null
     const transform = { x: 0, y: 0, k: 1 }
-    // ---- 纵深拖尾配置（v0.9.9）：方向角度可调，逐段缩小淡化，纯视觉 ----
-    const D = depth ?? {}
-    const trailSegs = Math.max(0, Math.min(12, Math.round(Number(D.trailSegments) || 0)))
-    const trailGap = Number(D.trailGap) > 0 ? Number(D.trailGap) : 26
-    const trailShrink = Number(D.trailShrink) > 0 ? Math.min(0.95, Number(D.trailShrink)) : 0.78
-    const trailFade = Number(D.trailFade) > 0 ? Math.min(1, Number(D.trailFade)) : 0.82
-    const depthAngle = Number.isFinite(Number(D.depthAngle)) ? Number(D.depthAngle) : 20
-    const tRad = depthAngle * Math.PI / 180
-    const tDirX = Math.cos(tRad), tDirY = -Math.sin(tRad)   // 正角向右上纵深（y 向下，-sin 即向上）
     const heat = (a) => { alpha = Math.max(alpha, a) }
     const step = () => {
       alpha += (0 - alpha) * 0.028
@@ -194,12 +185,6 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         if (n.y > maxY) maxY = n.y
       }
       const pad = 70
-      // 纵深拖尾视界：把每节点拖尾最远端也纳入全景框，避免光带溢出被裁
-      if (trailSegs > 0) {
-        const ext = trailSegs * trailGap
-        minX += Math.min(0, tDirX) * ext; maxX += Math.max(0, tDirX) * ext
-        minY += Math.min(0, tDirY) * ext; maxY += Math.max(0, tDirY) * ext
-      }
       const bw = Math.max(maxX - minX, 1), bh = Math.max(maxY - minY, 1)
       const kFit = Math.min((W() - pad * 2) / bw, (H() - pad * 2) / bh, 1.5)
       transform.k = Math.max(0.28, kFit)
@@ -245,30 +230,6 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       // 入场动画：边整体淡入（350ms），节点按距中心距离延迟显现
       const elapsed = performance.now() - bornAt
       const overallT = Math.min(1, elapsed / 350)
-      // 纵深拖尾（v0.9.9）：每个顶层节点沿同一纵深方向延伸的渐变"延长"（底层不是整图，只是单节点的延长）
-      if (trailSegs > 0) {
-        for (const n of nodes) {
-          const isFocus = n.id === focusId
-          const isNbr = focusId && neighbors.get(focusId)?.has(n.id)
-          const dimmed = focusIds && !focusIds.has(n.id)
-          const dist = Math.hypot(n.x - cx0, n.y - cy0)
-          const delay = (dist / maxDist) * 0.55 * revealMs
-          const tA = Math.min(1, Math.max(0, (elapsed - delay) / 320))
-          const ease = tA <= 0 ? 0 : 1 - (1 - tA) * (1 - tA) * (1 - tA)
-          if (ease <= 0.001) continue
-          const baseR = (4 + Math.min(n.degree, 14) * 0.55) / Math.sqrt(transform.k)
-          for (let s = trailSegs; s >= 1; s--) {
-            const sc = Math.pow(trailShrink, s)
-            const tr = baseR * sc * ease
-            if (tr < 0.4) continue
-            ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 1) * ease * (dimmed ? 0.12 : 1) * Math.pow(trailFade, s)
-            ctx.beginPath()
-            ctx.arc(n.x + tDirX * (s * trailGap), n.y + tDirY * (s * trailGap), Math.max(tr, 0.6), 0, Math.PI * 2)
-            ctx.fillStyle = n.color
-            ctx.fill()
-          }
-        }
-      }
       for (const e of edges) {
         const on = !focusId || e.a.id === focusId || e.b.id === focusId
         const dimmed = focusIds && !(focusIds.has(e.a.id) && focusIds.has(e.b.id))
@@ -307,6 +268,26 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
             ctx.lineWidth = 1.3 / Math.sqrt(transform.k)
             ctx.stroke()
           }
+        }
+        // +N 更新徽标（v0.9.10）：更新过的节点右上角标注更新次数（取代纵深拖尾——"旧节点"不再散落）
+        if ((n.versions ?? 1) > 1) {
+          const cnt = (n.versions ?? 1) - 1
+          const br = 7.5 / transform.k
+          const bx = n.x + r * 0.9, by = n.y - r * 0.9
+          ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 0.95) * ease * (dimmed ? 0.12 : 1)
+          ctx.beginPath()
+          ctx.arc(bx, by, br, 0, Math.PI * 2)
+          ctx.fillStyle = "#1e1e24"
+          ctx.fill()
+          ctx.strokeStyle = "#ffd54f"
+          ctx.lineWidth = 1.1 / transform.k
+          ctx.stroke()
+          ctx.fillStyle = "#ffd54f"
+          ctx.font = `bold ${8.5 / transform.k}px sans-serif`
+          ctx.textAlign = "center"
+          ctx.textBaseline = "middle"
+          ctx.fillText(`+${cnt}`, bx, by + 0.5 / transform.k)
+          ctx.textBaseline = "alphabetic"
         }
         if (isFocus) {
           ctx.strokeStyle = "#fff"
@@ -418,7 +399,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       canvas.removeEventListener("click", onClick)
       canvas.removeEventListener("wheel", onWheel)
     }
-  }, [data, onSelect, selectedRef, drawRef, physics, depth])
+  }, [data, onSelect, selectedRef, drawRef, physics])
 
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block", cursor: "grab" }} />
 })
@@ -502,14 +483,6 @@ function MemoryGraphView({ scope }) {
     damping: Number(gv.damping) || 0.3,
     gravity: Number(gv.gravity) || 0.005,   // || 而非 ??：Number(undefined)=NaN，NaN??x 仍是 NaN 会击穿力导向
   }), [gv.spring, gv.repulsion, gv.damping, gv.gravity])
-  // 纵深拖尾参数（v0.9.9）：方向角度可调，live 生效；引用变化 → 重建模拟（同 physics）
-  const depth = useMemo(() => ({
-    depthAngle: Number.isFinite(Number(gv.depthAngle)) ? Number(gv.depthAngle) : 20,
-    trailSegments: Number.isFinite(Number(gv.trailSegments)) ? Number(gv.trailSegments) : 4,
-    trailGap: Number.isFinite(Number(gv.trailGap)) ? Number(gv.trailGap) : 26,
-    trailShrink: Number.isFinite(Number(gv.trailShrink)) ? Number(gv.trailShrink) : 0.78,
-    trailFade: Number.isFinite(Number(gv.trailFade)) ? Number(gv.trailFade) : 0.82,
-  }), [gv.depthAngle, gv.trailSegments, gv.trailGap, gv.trailShrink, gv.trailFade])
 
   const load = useCallback(() => {
     setError("")
@@ -614,7 +587,7 @@ function MemoryGraphView({ scope }) {
           </select>
           <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
-        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} depth={depth} focusIdsRef={focusIdsRef} />
+        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} />
         <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2 }}>
           <span style={{ color: "#5b9bd5" }}>— similarTo 语义相似</span>
           <span style={{ marginLeft: 10, color: "#e07b39" }}>→ before 时间演化</span>
