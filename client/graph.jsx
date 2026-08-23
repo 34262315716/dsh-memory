@@ -3,22 +3,64 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 sidebar.footer.action 插槽。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
-const THEME_COLORS = [
-  '#5b9bd5', '#70ad47', '#ffc000', '#e07b39', '#9e6fc2', '#d65c5c',
-  '#4db6ac', '#a1887f', '#7986cb', '#f06292', '#26a69a', '#8d6e63',
-]
+/** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
+ *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
+function themePalette(n) {
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const h = Math.round((i * 360) / n)
+    const l = i % 2 ? 57 : 65
+    out.push(`hsl(${h},74%,${l}%)`)
+  }
+  return out
+}
+const THEME_COLORS = themePalette(14)
 
-/** 新旧色温（四维蠕虫的时间维度）：按创建时间把主题色压暗——新=原色亮，旧=暗。
- *  库内相对映射（minCreatedAt=库内最早创建时间）：任意时间跨度下新旧对比都明显。 */
-function ageShade(hex, createdAt, minCreatedAt, now = Date.now()) {
+/** 无主题节点：按记忆类型上色（v0.10：96% 的记忆无主题，原先清一色 #888 被压暗成"深蓝灰"一坨；
+ *  类型是高区分度第一维——一眼分出决策/记录/教训/画像/偏好）。 */
+const TYPE_COLORS = {
+  note:       'hsl(199, 92%, 62%)',   // 天青蓝（记录/中性）
+  decision:   'hsl(36, 95%, 61%)',    // 琥珀（决策=行动）
+  preference: 'hsl(291, 52%, 62%)',   // 紫（偏好=个性）
+  lesson:     'hsl(1, 83%, 63%)',     // 珊瑚红（教训=警示）
+  profile:    'hsl(122, 45%, 58%)',   // 翠绿（画像=用户本人）
+}
+const TYPE_COLOR_FALLBACK = 'hsl(200, 16%, 60%)'   // 蓝灰（legacy/未知类型）
+const TYPE_LABEL = { note: "记录", decision: "决策", preference: "偏好", lesson: "教训", profile: "画像" }
+
+/** 节点最终色（v0.10 重写）：
+ *  基色（主题色或类型色）→ strength 明度微调（次级维度，同类型节点也有层次）
+ *  → ditherId 色相抖动（无主题节点按 id 确定性 ±12°，同类型内也有颜色渐变，避免"一坨同色"）
+ *  → 年龄明度压缩（四维蠕虫时间维度）。全程只动 HSL 明度/微动色相，饱和度永不失真：
+ *  旧节点依然"看得出来是什么颜色"，只是比新的暗一点（压暗上限旧版 55% → 40%）。 */
+function nodeColor(base, strength, createdAt, minCreatedAt, now = Date.now(), ditherId = null) {
+  const m = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
+  if (!m) return base
+  let h = +m[1], s = +m[2], l = +m[3]
+  // strength 实测 0.1~1.3（均值 ~0.18）→ 明度增量 -2.4 ~ +10
+  l += Math.max(-8, Math.min(10, (strength - 0.3) * 12))
+  // 确定性色相抖动（同 id 永远同色）：±12°，保持类型色相区域语义不破
+  if (ditherId) {
+    let x = 0
+    for (const ch of String(ditherId)) x = (x * 31 + ch.charCodeAt(0)) % 997
+    h += ((x % 5) - 2) * 6
+    if (h < 0) h += 360
+    if (h >= 360) h -= 360
+  }
+  // 库内相对映射（minCreatedAt=库内最早创建时间）：任意时间跨度下新旧对比都明显
   const span = Math.max(1, now - (minCreatedAt ?? now))
-  const ratio = 1 - Math.max(0, Math.min(1, (now - (createdAt ?? now)) / span)) * 0.55
-  const n = parseInt(String(hex).slice(1), 16)
-  if (Number.isNaN(n)) return hex
-  const r = Math.round(((n >> 16) & 255) * ratio)
-  const g = Math.round(((n >> 8) & 255) * ratio)
-  const b = Math.round((n & 255) * ratio)
-  return `rgb(${r},${g},${b})`
+  const ratio = 1 - Math.max(0, Math.min(1, (now - (createdAt ?? now)) / span))
+  l = (0.60 + 0.40 * ratio) * l
+  return `hsl(${Math.round(h)},${Math.round(s)}%,${Math.round(Math.min(90, Math.max(12, l)))}%)`
+}
+
+/** 节点基色：有主题 → 主题色（色板按主题列表索引）；无主题 → 类型色。 */
+function pickColor(themes, theme, type) {
+  if (theme) {
+    const i = themes.indexOf(theme)
+    if (i >= 0) return THEME_COLORS[i % THEME_COLORS.length]
+  }
+  return TYPE_COLORS[type] ?? TYPE_COLOR_FALLBACK
 }
 
 /** 记忆时间筛选窗口。 */
@@ -110,10 +152,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const W = () => canvas.width / dpr, H = () => canvas.height / dpr
 
     // ---- 模拟状态 ----
-    const colorOf = (theme) => {
-      const i = data.themes.indexOf(theme)
-      return i >= 0 ? THEME_COLORS[i % THEME_COLORS.length] : "#888"
-    }
+    const colorOf = (theme, type) => pickColor(data.themes, theme, type)
     const degree = new Map()
     for (const e of data.edges) { degree.set(e.from, (degree.get(e.from) ?? 0) + 1); degree.set(e.to, (degree.get(e.to) ?? 0) + 1) }
     // 初始位置：主题环形布局（力导向从有序起点自然展开，观感优雅）
@@ -122,8 +161,8 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const minCreated = Math.min(...data.nodes.map((n) => n.createdAt ?? now), now)
     const nodes = data.nodes.map((n) => {
       const p = init.positions.get(n.id) ?? [W() / 2 + (Math.random() - 0.5) * 60, H() / 2 + (Math.random() - 0.5) * 60]
-      // 新旧色温：新记忆亮、旧记忆暗（时间作为第四维的视觉编码；库内相对映射）
-      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: ageShade(colorOf(n.theme), n.createdAt, minCreated, now) }
+      // 基色（主题色/类型色）→ strength 微调 → 色相抖动（仅无主题）→ 新旧色温（新亮旧暗）
+      return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: nodeColor(colorOf(n.theme, n.type), n.strength, n.createdAt, minCreated, now, n.theme ? null : n.id) }
     })
     const nodeById = new Map(nodes.map((n) => [n.id, n]))
     const edges = data.edges.map((e) => ({ ...e, a: nodeById.get(e.from), b: nodeById.get(e.to) })).filter((e) => e.a && e.b)
@@ -469,10 +508,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
 /** 详情面板（memo：仅选中变化时重渲染）。 */
 const DetailPanel = memo(function DetailPanel({ selected, data }) {
   const { colorOf, adj, nodeById } = useMemo(() => {
-    const co = (theme) => {
-      const i = data.themes.indexOf(theme)
-      return i >= 0 ? THEME_COLORS[i % THEME_COLORS.length] : "#888"
-    }
+    const co = (theme, type) => pickColor(data.themes, theme, type)
     const nodeById = new Map(data.nodes.map((n) => [n.id, n]))
     const a = new Map()
     for (const e of data.edges) {
@@ -486,7 +522,7 @@ const DetailPanel = memo(function DetailPanel({ selected, data }) {
   if (!selected) return null
   return (
     <div style={{ width: 280, borderLeft: "1px solid #333", padding: 14, overflowY: "auto", background: "#161616" }}>
-      <h4 style={{ margin: "0 0 8px", color: colorOf(selected.theme) }}>{selected.theme || "(未归类)"}</h4>
+      <h4 style={{ margin: "0 0 8px", color: colorOf(selected.theme, selected.type) }}>{selected.theme || "(未归类)"}</h4>
       <p style={{ fontSize: 12, color: "#888", margin: "0 0 10px" }}>
         {selected.type} · {selected.layer} · strength {selected.strength} · {new Date(selected.createdAt).toLocaleString("zh-CN", { hour12: false })}
       </p>
@@ -650,14 +686,25 @@ function MemoryGraphView({ scope }) {
           <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
         <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} />
-        <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2, display: "flex", flexWrap: "wrap", gap: 8, maxWidth: "72%", justifyContent: "flex-end" }}>
+        <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2, display: "flex", flexWrap: "wrap", gap: 8, maxWidth: "72%", justifyContent: "flex-end", alignItems: "center" }}>
+          {(filtered?.nodes ?? []).length > 0 && (
+            <>
+              <span>节点色：</span>
+              {Object.entries(TYPE_COLORS).filter(([t2]) => (filtered?.nodes ?? []).some((n) => n.type === t2)).map(([t2, c]) => (
+                <span key={t2} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                  <i style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />{TYPE_LABEL[t2] ?? t2}
+                </span>
+              ))}
+              <span style={{ color: "#888" }}>无主题默认按类型上色</span>
+            </>
+          )}
           {EDGE_ORDER.filter((t2) => (filtered?.edges ?? []).some((e) => e.type === t2)).map((t2) => (
             <span key={t2} style={{ color: EDGE_STYLE[t2].color }}>
               {t2 === "similarTo" ? "—" : t2 === "before" ? "→" : t2 === "mentions" ? "· ·" : "—"}{" "}{EDGE_LABEL[t2]}
             </span>
           ))}
           <span style={{ color: "#ffd54f" }}>◎ +N = 更新过 N 次</span>
-          <span>色浅新 · 色深旧</span>
+          <span>色浅新 · 色深旧（明度差=年龄）</span>
           <span>拖节点 · 平移 · 缩放 · 点边看类型</span>
         </div>
       </div>
