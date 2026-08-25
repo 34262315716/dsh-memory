@@ -1,67 +1,75 @@
-# dsh-memory 路线图（v0.9/v0.10 系列）
+# dsh-memory 执行计划（v0.10 系列 + 短板治理）
 
-> 状态：v0.9.8（2026-08-19）。真向量检索/注入/图谱（增量构建）/管家/时间维度/防崩溃/日志/scope 分层已就绪。
-> 本文档承接 CHANGELOG「下一步」，是后续开发的执行计划。每阶段完成标准：实现 + 测试 + CHANGELOG + 部署副本同步 + 提交推送。
+> 状态：2026-08-25 更新。v0.9.18 已部署（图谱配色重做 + 8/24 注入链路修复，inject 53 次/preheat 65 次）。
+> 本文档把 ROADMAP 的 v0.10 部分升级为**可执行计划**，并入最新发现的两块短板（画像召回弱、reranker 未配）。
+> 每阶段完成标准（沿用纪律）：实现 + 测试 + CHANGELOG + 部署副本 md5 同步 + 提交推送。
 
-## 已完成（v0.9 系列）
+## 0. 现状基线（2026-08-25）
 
-| 版本 | 内容 |
-|---|---|
-| v0.9.0 | 阶段 A **事件分类**（events 表 + 时间线扫描 + 管家维护 + memory_events + 图谱事件筛选/高亮） |
-| v0.9.1 | 图谱关系质量修复（before 方向自愈 / similarTo 阈值 0.6 / 主题碎片过滤） |
-| v0.9.2 | 阶段 B **画像分类**（type=profile + aspect + refiner 识别 + 预热画像优先 + 画像蒸馏） |
-| v0.9.3 | 子代理审查修复批（aspect 读回路 / 预热窗口挤压 / 蒸馏幂等 / 事件陈旧 id / N+1） |
-| v0.9.4 | **scope 分层**（会话工作目录 → 项目隔离，检索双 scope [项目, global]） |
-| v0.9.5 | **运行日志全透明**（logs 表 + 全链路埋点 + GUI「记忆日志」面板 + memory_logs 工具）+ scope 分层根治（workspaceRegistry fallback——EAC web 会话无 cwd） |
-| v0.9.6 | 热修复（v0.9.5 埋点作用域 bug——registerTools 是模块级函数，工具内不可依赖 apply 局部变量 wsRegistry/logStore） |
-| v0.9.7 | 模块结构解耦重构（lib 拆装配壳 + 分域 tool，client 拆三视图，零行为改动） |
-| v0.9.8 | **图谱派生数据增量构建**（主题聚类持久化簇 + 事件检测水位线，启动/巡检不再全量重建）+ 真向量检索实证 + 记忆库过期结论清理 |
+- 版本 **v0.9.18** 部署生效（web-desktop/web 双副本 + cordis.patch.yml `injectMinScore: 0.02`）
+- 注入链路打通：pre-step 逐步注入 live（昨日 53 次），preheat 预热 65 次
+- 三路 RRF 检索（向量/FTS/关键词）live；**reranker = null 未启用**
+- **主题荒漠**：96% 记忆无主题（208/217 曾为 `(未归类)`，配色已按类型兜底）
+- **画像召回弱**：profile 记忆 content 短/关键词少，被含泛词的长记忆在 RRF 中碾压（"查丹道记录"注入回图谱治理记录）
+- 记忆库 194 sm + 53 ep
 
-## 分类维度全景
+## 1. P0 快赢（各半天，互不依赖，可并行）
 
-| 维度 | 依据 | 回答的问题 | 现状 |
-|---|---|---|---|
-| theme | 向量语义相似（v0.10 改 refiner 打标） | "在讲什么" | 已有 |
-| type | 内容性质 | "什么类型" | note/decision/preference/lesson/profile |
-| event | 时间连续 + 因果 | "属于哪件事" | ✅ v0.9.0 |
-| profile | 用户本人稳定信息 | "用户是谁" | ✅ v0.9.2 |
-| scope | 会话工作目录/工作区 | "属于哪个项目" | ✅ v0.9.4/0.9.5 |
-| **abstraction** | 抽象层级 | "可复用原则 or 具体事件" | 待 v0.10 |
-| **refiner theme** | LLM 打主题 | "哪个主题（如 AI绘画）" | 待 v0.10 |
+### 1.1 画像类记忆注入加权
+- **目标**：注入命中分布里画像/短记忆不再被泛词长记忆碾压。
+- **方案**：`store.search` 支持类型加权（`boost: {profile: n}` 或注入时对 profile 单独 recall 一段并入）；不破坏现有 RRF 分数语义，加权仅作用于注入路径（`pipelines/inject.js` 传参）。
+- **验证**：回归——用 "查一下我上次的丹道修炼记录" 实测应命中丹道画像（mem-9e1190d1），而非图谱治理记录；对比加权前后命中分布中 profile 占比。
+- **完成标准**：回归实测通过 + 守护测试 + CHANGELOG + 同步 + 提交。
 
-## 阶段 C：图工具记忆级升级（待做）
+### 1.2 reranker 真实接入（配置 + A/B）
+- **现状**：`embedder.js` rerank seam 已就绪，settings 有 `reranker` 配置块，缺 API key 未启用。
+- **方案**：凭据文件补 reranker 密钥（用户操作）→ 设置 `reranker.enabled: true`；logs 埋点输出重排前后排序。
+- **验证**：A/B——同一 query 开/关重排，人工评分 10 条注入结果相关性（重排后 top1~3 是否更对口）。
+- **完成标准**：端到端启用 + 埋点可观测 + 留存 A/B 对比记录。
 
-- `memory_graph_path`：fromId/toId 语义实体节点 → 记忆 id（memoryPath 已就绪）
-- `memory_graph_neighbors`：输出实体节点 → 记忆级邻域（memoryLinkNeighbors 已就绪）
-- `memory_graph_node` 保留；守护测试工具清单同步
+## 2. P1 v0.10 阶段一：refiner 蒸馏双输出（abstraction + theme）
 
-## v0.10 系列（用户需求已提，待拍板细节）
+一次手术切两个病灶：abstraction 与 theme 同属**蒸馏输出 schema 改造**。
 
-### ① 抽象层级 abstraction —— 用户核心诉求："我如何看待设计"而非"设计了什么"
-- refiner 输出 `abstract: 'principle' | 'event'`
-  - principle：方法/原则/可复用经验（跨项目资产）
-  - event：具体事件/产出/状态（参考价值低）
-- 新列 abstraction + 白名单校验
-- **注入加权**：pre-step/预热 principle 优先，event 降权（强相关才注入）
+- **abstraction**：新列 `abstract: 'principle' | 'event'`（白名单校验）；principle=方法/原则/可复用经验，event=具体事件/产出。
+- **theme**：新列 `theme: string`（LLM 打简短稳定名词标签，如 "AI绘画" / "dsh-memory 开发"）；向量聚类降级兜底；**存量不动**。
+- **注入加权联动**：pre-step/preheat 中 principle 优先注入、event 降权（强相关才注入）；theme 用于注入聚合与图谱着色。
+- **GUI**：设置面板 + 图谱图例同步新维度说明。
+- **验证**：新写入抽查 20 条标注一致性（人工 3 分类）；注入实验：query 命中记忆的 theme 与 query 主题匹配率；图谱主题着色"荒漠→全绿"。
+- **完成标准**：迁移脚本幂等 + 蒸馏一致性抽查 ≥80% + 全量测试 + CHANGELOG + 同步 + 提交。
 
-### ② 主题打标（refiner theme）
-- 蒸馏输出 theme（LLM 打简短稳定名词标签："AI绘画" / "dsh-memory 开发"）
-- 落 theme 列；向量聚类降级兜底；存量不动
+## 3. P2 v0.10 阶段二：GUI 主题圈 + 图工具记忆级升级
 
-### ③ GUI 主题圈
-- 同主题节点画包围圈/凸包 + 主题名（与主题着色协同）
+- **主题圈**：同主题节点画包围圈（凸包/虚线椭圆）+ 主题名，仅画节点数 ≥3 的主题；与主题着色协同；样式待拍板（虚线椭圆 vs 淡色圆盘）。
+- **图工具升级**（阶段 C）：`memory_graph_path` / `memory_graph_neighbors` 从实体节点升级为记忆级（`memoryPath` / `memoryLinkNeighbors` 已就绪，只差接线）；`memory_graph_node` 保留；守护测试工具清单同步。
 
-### 待拍板
-- category 与 abstraction 的关系（abstraction 是否足够，还是需要 category 领域维度）
-- 主题圈样式（虚线椭圆 vs 淡色圆盘）
-- 注入加权幅度
+## 4. P3 维护小项（随时可捡）
 
-## 阶段 D 残余小项
-1. 预热重复注入去抖（session-start 多次触发）
-2. reranker 真实 API A/B 验证
-3. GUI 嵌入 provider 切换提示（维度迁移）
-4. 存量 global 记忆迁移/老化策略
+1. 预热重复注入去抖（session-start 多次触发场景已有记录）
+2. 存量 global 记忆迁移/老化策略
+3. GUI 嵌入 provider 切换提示（维度迁移 UI）
 
-## 阶段 E（远期/搁置）
-- compaction-smart（用户定：记忆系统之后再看）
-- Leiden/图社区（被主题聚类替代）；规模/高级（KuzuDB/LanceDB 等）
+## 5. 顺序与依赖
+
+```
+P0.1 画像加权 ──┐（独立）
+P0.2 reranker ──┤（独立）
+                ▼
+P1 蒸馏双输出（abstraction + theme）── 依赖 refiner 管线一次改造
+                ▼
+P2 主题圈（依赖 P1 的 theme 数据）＋ 图工具记忆级升级（独立于 P1）
+                ▼
+P3 维护小项
+```
+
+- P0 两项不依赖任何东西，**建议先并行**；P0.1 半小时-1 小时，P0.2 取决于密钥配置。
+- P1 是 v0.10 核心（用户核心诉求"我如何看待设计"），改完图谱主题维度才算真正闭环。
+- P2 主题圈依赖 P1 数据；图工具升级随时可做。
+- 每阶段收尾一律：测试全绿 + CHANGELOG + 部署副本同步 + 提交推送。
+
+## 6. 待拍板
+
+- P0.1 权重形式：search 层 boost 参数 vs 注入侧单独 recall（倾向 search 层，影响面小）
+- P1 theme 风格：自由名词 vs 白名单候选（倾向自由名词 + 聚类兜底）
+- P2 主题圈样式：虚线椭圆 vs 淡色圆盘
+- reranker 密钥来源（用户侧配置，不入库不截图）
