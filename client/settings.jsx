@@ -315,12 +315,13 @@ export function MemorySettingsSection({ scope, api, llmScope }) {
       }
       {/* reranker 整体 */}
       const rkKeys = RERANKER_FIELDS.map(([f]) => f)
-      if (rkKeys.some((f) => drafts[`reranker.${f}`] !== undefined)) {
+      if (rkKeys.some((f) => drafts[`reranker.${f}`] !== undefined) || drafts['reranker.enabled'] !== undefined) {
         const next = { ...reranker }
         for (const [f] of RERANKER_FIELDS) {
           const v = drafts[`reranker.${f}`]
           if (v !== undefined) next[f] = NUMERIC_SUB.has(f) ? Number(v) : String(v)
         }
+        if (drafts['reranker.enabled'] !== undefined) next.enabled = drafts['reranker.enabled']
         await scope.set('reranker', next)
       }
       {/* graphView 整体 */}

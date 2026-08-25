@@ -2,6 +2,17 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.19 — reranker 启用开关保存 bug 修复：GUI 点开关终于能落盘（2026-08-25）
+
+用户反馈"重排模型和嵌入模型供应商一致，我记得已经配置好了"但日志 `reranker: null`。排查：
+- **根因**：settings GUI 已有「启用重排」开关渲染，但保存逻辑只写 `RERANKER_FIELDS`（provider/model/baseUrl/apiKeyEnv/topK/minCandidates/rrfWeight），**漏了 `enabled` 分支**——用户点开关，改动被静默丢弃（与 8/24 patch.yml 固化 0.2 同类的"配置链路静默断点"）。
+- **修复**：reranker 保存块补 `drafts['reranker.enabled']` 分支（照 housekeeping.enabled 先例）；GUI 点「启用重排」即 live 生效（applies: 'live'，无需重启）。
+- **顺带**：用户侧 settings.yaml 已补 `reranker.enabled: true`；密钥 `MEMORY_RERANK_API_KEY` 早已存在于凭据文件。重启或 GUI 点开后，init 日志将由 `reranker: null` 变为 `reranker: remote`（Qwen3-VL-Reranker-8B / 硅基流动 / baseUrl 跟随嵌入端点 / RRF+重排融合 w=0.7）。
+
+### 验证
+- bundle 重建 87501 B，web-desktop 副本 md5 同步；10 套测试不受影响（纯 client 改动）。
+- 版本 0.9.18 → 0.9.19；重开记忆设置面板生效（开关状态即当前生效值）。
+
 ## v0.9.18 — 图谱节点配色重做：告别"深蓝灰一坨"，类型色 + 色相抖动 + HSL 年龄压暗（2026-08-23）
 
 用户反馈图谱节点"很多都是深蓝色，不好看、缺乏辨认度"。根因：**96% 的记忆无主题（208/217）**，前端 `colorOf('')` 全部落到灰色 `#888`，再经 RGB 乘法压暗 55% → 深色背景上一整片同色节点。
