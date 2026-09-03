@@ -2,6 +2,19 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.21 — EAC 5.3.6 适配：新内核（dsh 0.1.2-alpha.1 / cordis 4.0.1）兼容（2026-08-31）
+
+EAC 桌面端升级 v5.3.6（内核 dsh 0.1.2-alpha.1 + cordis 4.0.1 + dsh-llm/settings/tools 0.1.2-alpha.1）后全面适配。全过程与对照见 [`eac-5.3-adapt-plan.md`](eac-5.3-adapt-plan.md)。
+
+- **挂载恢复（运维行为）**：EAC 更新后 `web-desktop/cordis.patch.yml` 重写，dsh-memory 的 insert 条目被移除（登记与挂载状态不一致）；按 09-01 备份补回条目（config 只放稳定默认，运行时以 settings.yaml 用户层为准）。**升级 EAC 后需检查挂载点是否还在**（registry 只记安装档案，patch 行是 cordis 加载依据）。
+- **settings 暴露机制换代**：删除 `lib/settings-expose.js`（apiproxy `WEB_SETTINGS_NAMESPACES` 白名单自愈 hack）。0.1.2-alpha.1 内核已官方暴露全部已注册命名空间（`dsh-api-settings-controller` describe()），hack 的目标包 `dsh-host-apiproxy` 已不存在；README「必要前置」章节改写。
+- **client 注入清单精简**：`dsh.client.inject` 从 5 包减为 3 包——`@deepseek-ai/dsh-client-runtime` 在新内核已不存在（client 注册表对 missing bundle 会整体 FAILED，属必须修项）；`@deepseek-ai/dsh-api-remotes` 已变为 host BFF 包且 client 端未使用，一并移除。client 端 `inject` 数组同步去掉未用的 `remote`。
+- **供应商目录数据源适配（GUI）**：旧 `api.llm.providers/models` Remote 端点已移除（新内核为 `remoteDiscoverModels` 单方法）；settings.jsx 改为从 `llm-pi-ai`（providers 字典）+ `llm-deepseek`（deepseek-official 单路由）两个命名空间推导供应商/模型预设；密钥引用自动跟随选中路由的 `apiKeyEnv`（deepseek-official → `DEEPSEEK_API_KEY`）；命名空间快照加容错（未注册不崩）。
+- **refiner 供应商迁移（配置）**：用户配置 `refiner.provider: opencode-go` 在新内核无对应 route（蒸馏每次失败静默降级规则路径）；迁移为 `deepseek-official`（llm-deepseek 路由，模型 `deepseek-v4-flash` 在其目录内，凭据 `DEEPSEEK_API_KEY` 已存在，零新增配置）。
+- **session/event 轮次兼容（后端）**：0.1.2 内核 `user/message` 事件 data 直接是 UserMessage（无 turn 字段），write 管线按轮次聚合会全部并入同一桶；新增每会话 `lastTurn` 兜底（turn/start / assistant/message / turn/end 携带的显式 turn）。
+- **声明与契约**：`package.json` 增加 `engines.dsh: >=0.1.2-alpha.1`（EAC 市场/更新器门槛）；peerDependencies `>=0.1.0` 对 `0.1.2-alpha.1` 满足 semver（同 major.minor 才比较 pre-release），无需改动。其余核对兼容项（零改动）：cordis 4 的 ctx.on/inject/provide、`agent/pre-step` waterfall（全路径 return next()）、`createUserMessage`（`form:'recall'` 运行时无校验）、`ctx.llm.stream`、`settings.register`、`webServer.register`、`workspaceRegistry`、`defineTool` 形状、插槽名 `settings.section`/`sidebar.footer.action`。
+- **测试环境（开发备忘）**：仓库 node_modules 的 `@deepseek-ai`/`schemastery`/`cosmokit` 用 junction 指向 EAC 内核依赖（dsh-desktop/node_modules）后，11 套测试全绿（含需副本环境的 test-profile 16 项 / test-crash-safety 10 项，验证 21 个工具与三个事件钩子在 0.1.2-alpha.1 下注册成功）。
+
 ## v0.9.19 — reranker 启用开关保存 bug 修复：GUI 点开关终于能落盘（2026-08-25）
 
 用户反馈"重排模型和嵌入模型供应商一致，我记得已经配置好了"但日志 `reranker: null`。排查：

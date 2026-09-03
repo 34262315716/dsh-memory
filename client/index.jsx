@@ -15,18 +15,19 @@ import { MemoryGraphLauncher } from './graph.jsx'
 import { MemoryLogLauncher } from './logs.jsx'
 
 export const name = 'dsh-memory-client'
-export const inject = ['slots', 'settingsScope', 'connection', 'remote']
+export const inject = ['slots', 'settingsScope', 'connection']
 
 export function apply(ctx) {
   const scope = ctx.settingsScope.bind({ namespace: 'memory' })
   const llmScope = ctx.settingsScope.bind({ namespace: 'llm-pi-ai' })
+  const deepseekScope = ctx.settingsScope.bind({ namespace: 'llm-deepseek' })
   const { api } = ctx.get('connection')
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'memory',
     order: 25,
     label: () => '记忆',
-    inject: () => ({ scope, api, llmScope }),
+    inject: () => ({ scope, api, llmScope, deepseekScope }),
   }, MemorySettingsSection))
   // 记忆图谱：主界面可收起侧边栏的底部入口（sidebar.footer.action，与任务看板同槽）
   try {

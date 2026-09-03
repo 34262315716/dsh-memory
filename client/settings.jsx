@@ -3,7 +3,12 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 settings.section 插槽。
  * 用 ctx.settingsScope 读写 settings.yaml 的 `memory` 命名空间，live 生效。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+
+/** 命名空间快照容错：未注册/读取失败时返回空对象（供应商目录为空也不崩）。 */
+const safeSnapshot = (scope) => {
+  try { return scope.getSnapshot() } catch { return { value: {} } }
+}
 /** 表单字段定义：数值字段（顶层）。 */
 const NUMBER_FIELDS = [
   ['injectMaxTokens', '注入最大 token/次', '每次自动注入的 token 预算'],
@@ -158,37 +163,65 @@ function KeyInput({ api, ref, hint }) {
 }
 
 /** 设置面板主组件（侧边栏"记忆"导航项的完整设置菜单）。 */
-export function MemorySettingsSection({ scope, api, llmScope }) {
+export function MemorySettingsSection({ scope, api, llmScope, deepseekScope }) {
   const [snap, setSnap] = useState(() => scope.getSnapshot())
   useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope])
 
   // 供应商配置目录（llm-pi-ai 命名空间）：每个供应商自己的密钥引用（apiKeyEnv）与端点
-  const [llmSnap, setLlmSnap] = useState(() => llmScope.getSnapshot())
-  useEffect(() => llmScope.subscribe(() => setLlmSnap(llmScope.getSnapshot())), [llmScope])
+  const [llmSnap, setLlmSnap] = useState(() => safeSnapshot(llmScope))
+  useEffect(() => llmScope.subscribe(() => setLlmSnap(safeSnapshot(llmScope))), [llmScope])
+  // llm-deepseek 命名空间（deepseek-official 单路由）：EAC 5.3 起内核的官方 DeepSeek 适配器
+  const [deepseekSnap, setDeepseekSnap] = useState(() => safeSnapshot(deepseekScope))
+  useEffect(() => deepseekScope.subscribe(() => setDeepseekSnap(safeSnapshot(deepseekScope))), [deepseekScope])
 
   const [drafts, setDrafts] = useState({})
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
-  // 供应商/模型预设：从 DSH 的 LLM 目录动态获取（已配置 providers + 各 provider 的模型目录）
-  const [providers, setProviders] = useState([])
-  const [modelGroups, setModelGroups] = useState([])
-  useEffect(() => {
-    let alive = true
-    api.llm.providers({}).then((r) => {
-      if (alive && r?.result?.ok) setProviders(r.result.value.providers ?? [])
-    }).catch(() => {})
-    api.llm.models({}).then((r) => {
-      if (alive && r?.result?.ok) setModelGroups(r.result.value.groups ?? [])
-    }).catch(() => {})
-    return () => { alive = false }
-  }, [api])
+  // 供应商配置集：llm-pi-ai 的 providers 字典 + llm-deepseek 的 deepseek-official 单路由
+  const value = snap.value ?? {}
+  const providersCfg = (llmSnap?.value?.providers ?? {})
+  const deepseekCfg = (deepseekSnap?.value ?? {})
+
+  // 供应商/模型预设（EAC 5.3 适配：旧 api.llm.providers/models 端点已移除，
+  // 改为从 llm-pi-ai + llm-deepseek 两个命名空间推导）
+  const providers = useMemo(() => {
+    const list = []
+    if (deepseekCfg && typeof deepseekCfg === 'object') {
+      list.push({
+        provider: 'deepseek-official',
+        displayName: 'DeepSeek 官方',
+        apiKeyEnv: deepseekCfg.apiKeyEnv || 'DEEPSEEK_API_KEY',
+        baseURL: deepseekCfg.baseURL || '',
+        active: true,
+      })
+    }
+    for (const [route, prof] of Object.entries(providersCfg ?? {})) {
+      list.push({
+        provider: route,
+        displayName: prof?.displayName || route,
+        apiKeyEnv: prof?.apiKeyEnv,
+        baseURL: prof?.baseURL,
+        active: true,
+      })
+    }
+    return list
+  }, [deepseekCfg, providersCfg])
+
+  const modelGroups = useMemo(() => {
+    const groups = []
+    const dsModels = deepseekCfg?.models
+    if (Array.isArray(dsModels) && dsModels.length > 0) groups.push({ id: 'deepseek-official', models: dsModels })
+    for (const [route, prof] of Object.entries(providersCfg ?? {})) {
+      if (Array.isArray(prof?.models) && prof.models.length > 0) groups.push({ id: route, models: prof.models })
+    }
+    return groups
+  }, [deepseekCfg, providersCfg])
 
   // 独立密钥状态：只报告"已配置/未配置"，绝不含密钥本身
   const [keyState, setKeyState] = useState({ ref: '', configured: false, checking: false, writing: false })
   const [keyDraft, setKeyDraft] = useState('')
 
-  const value = snap.value ?? {}
   const features = value.features ?? {}
   const refiner = value.refiner ?? {}
   const embedding = value.embedding ?? {}
@@ -205,9 +238,8 @@ export function MemorySettingsSection({ scope, api, llmScope }) {
   const modelValue = drafts['refiner.model'] ?? refiner.model ?? ''
   const modelIsPreset = providerModels.some((m) => m.id === modelValue)
 
-  // llm-pi-ai 命名空间的供应商配置（providers 字典，profile 含 apiKeyEnv/baseURL）
-  const providersCfg = (llmSnap?.value?.providers ?? {})
-  const selectedProfile = providersCfg[providerValue] ?? {}
+  // 选中供应商的完整画像（密钥引用跟随其 apiKeyEnv）
+  const selectedProfile = providers.find((p) => p.provider === providerValue) ?? {}
 
   /** 密钥目标引用：跟随选中供应商自己的 apiKeyEnv；供应商未声明时回退 refiner.apiKeyEnv（独立槽）。 */
   const keyRef = () => {
@@ -228,7 +260,7 @@ export function MemorySettingsSection({ scope, api, llmScope }) {
       setKeyState((s) => ({ ...s, checking: false }))
     }
   }
-  useEffect(() => { void checkKey() }, [drafts['refiner.apiKeyEnv'], refiner.apiKeyEnv, providerValue, llmSnap])
+  useEffect(() => { void checkKey() }, [drafts['refiner.apiKeyEnv'], refiner.apiKeyEnv, providerValue, llmSnap, deepseekSnap])
 
   const saveKey = async () => {
     if (!keyDraft) return

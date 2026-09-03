@@ -118,18 +118,11 @@ dsh plugin --profile web add dsh-advanced-memory   # 已发布到 npm，按包�
           graph: true
 ```
 
-### ⚠️ 必要前置：settings 命名空间白名单
+### ℹ️ 设置面板可见性
 
-GUI 设置面板依赖 `memory` 设置命名空间对 Web 客户端可见。DSH 的 apiproxy 有白名单机制（`packages/host/apiproxy/src/api-proxy.ts` 的 `WEB_SETTINGS_NAMESPACES`），需要添加一行：
+GUI 设置面板依赖 `memory` 设置命名空间对 Web 客户端可见。**EAC 5.3 / 内核 0.1.2-alpha.1 起已官方支持**：`dsh-api-settings-controller` 的 `describe()` 自动暴露所有已注册命名空间（含第三方插件），无需任何白名单配置。
 
-```ts
-const WEB_SETTINGS_NAMESPACES = [
-  'agent-loop', 'shell', 'locale', 'permission', 'ui-conversation', 'ui-theme', 'web-search-deepseek',
-  'memory',   // ← 添加
-] as const
-```
-
-> 这是 DSH 官方设计的安全边界（插件无法自行声明暴露，官方注释标注 deferred work）。升级 DSH 版本后需重新添加。
+> 旧版（<0.1.2-alpha.1）需要把 `memory` 加入宿主 apiproxy 的 `WEB_SETTINGS_NAMESPACES` 白名单（插件侧曾内置自愈 hack，v0.9.21 起已移除，见 `docs/CHANGELOG.md`）。
 
 ## ⚙️ 配置（settings.yaml 的 `memory` 段）
 
