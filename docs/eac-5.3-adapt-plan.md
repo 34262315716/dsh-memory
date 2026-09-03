@@ -1,7 +1,8 @@
 # dsh-memory × EAC 5.3.6 更新适配计划
 
-> 状态：调研完成，待执行。创建时间：2026-08-31（EAC v5.3.6 内核为 0.1.2-alpha.1）。
+> 状态：**已执行完毕（2026-08-31 提交 4ae0f24，v0.9.21）**，待重启 EAC 做运行期验证。
 > 范围：让 dsh-memory（当前 v0.9.19/v0.9.20）在最新 EAC 桌面端（web-desktop profile）完整恢复并稳定运行。
+> 执行结果摘要：挂载已恢复（cordis.patch.yml）；`lib/settings-expose.js` 已删除；client 注入清单 5→3 包；settings.jsx 供应商目录改由 llm-pi-ai + llm-deepseek 命名空间推导；write.js 轮次号兜底；refiner.provider 迁移 deepseek-official；11 套测试全绿；两副本已同步（md5 一致）；settings.yaml 与 agent-default-model 供应商已迁移。
 
 ## 一、现状诊断（已核实的事实）
 
