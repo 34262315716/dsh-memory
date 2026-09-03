@@ -14,6 +14,7 @@ EAC 桌面端升级 v5.3.6（内核 dsh 0.1.2-alpha.1 + cordis 4.0.1 + dsh-llm/s
 - **session/event 轮次兼容（后端）**：0.1.2 内核 `user/message` 事件 data 直接是 UserMessage（无 turn 字段），write 管线按轮次聚合会全部并入同一桶；新增每会话 `lastTurn` 兜底（turn/start / assistant/message / turn/end 携带的显式 turn）。
 - **声明与契约**：`package.json` 增加 `engines.dsh: >=0.1.2-alpha.1`（EAC 市场/更新器门槛）；peerDependencies `>=0.1.0` 对 `0.1.2-alpha.1` 满足 semver（同 major.minor 才比较 pre-release），无需改动。其余核对兼容项（零改动）：cordis 4 的 ctx.on/inject/provide、`agent/pre-step` waterfall（全路径 return next()）、`createUserMessage`（`form:'recall'` 运行时无校验）、`ctx.llm.stream`、`settings.register`、`webServer.register`、`workspaceRegistry`、`defineTool` 形状、插槽名 `settings.section`/`sidebar.footer.action`。
 - **测试环境（开发备忘）**：仓库 node_modules 的 `@deepseek-ai`/`schemastery`/`cosmokit` 用 junction 指向 EAC 内核依赖（dsh-desktop/node_modules）后，11 套测试全绿（含需副本环境的 test-profile 16 项 / test-crash-safety 10 项，验证 21 个工具与三个事件钩子在 0.1.2-alpha.1 下注册成功）。
+- **client 收录根因修复（追加）**：重启后设置项不出现——client 注册表（`dsh-client-modules`）的 `nearestPackage()` 要求 **package.json 的 `name` 字段 === loader 条目名**，本包名是 npm 发布名 `dsh-advanced-memory` 而目录/挂载名是 `dsh-memory` → 校验失败被**静默跳过**（无任何日志），boot graph（`__DSH_BOOT__.entries`）里第三方插件都在唯独缺 dsh-memory。修复：本地包名改为 `dsh-memory`（package.json + package-lock）并同步副本。⚠️ 教训：**本地复制式安装的 DSH 插件，包名必须与目录名/挂载名一致**，否则 client 端（设置面板等 GUI）静默消失；若走 npm 市场发布则需保持包名=挂载名一致再发布。
 
 ## v0.9.19 — reranker 启用开关保存 bug 修复：GUI 点开关终于能落盘（2026-08-25）
 
