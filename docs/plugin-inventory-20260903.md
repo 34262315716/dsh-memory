@@ -46,6 +46,8 @@
 - 三件套 client.inject 依赖模块（dsh-client-ui-sidebar、dsh-api-session-controller、dsh-api-workspace-controller 等）在 alpha.1 的 boot graph 中均存在 → 大概率可运行，但 API 差异无保证；
 - 旧版 @linxin666 组件（0.1.x，artifact cache 内的 0.1.20）无 engines 要求 → 若要绝对稳妥可回退 0.1.x。
 
+**✅ 安装结果（2026-09-03 23:2x 已生效）**：`dsh plugin --profile web-desktop add`（转发 pnpm，带代理）直装成功——dependencies 5 新依赖、bundles 7→11、pnpm-lock 更新、pnpm-workspace.yaml 放行 node-pty/cloudflared（rebuild 出 conpty.dll/cloudflared.exe）、dump-config 组合树 4 新 entry 无错；重启后 boot rev 758eb5a7c4c1 含 4 个新 client 条目，settings/describe 21 ns（+dsh-better-sidebar、+git-graph；task-board/remote-web-ui 走 slots/侧边栏 UI 呈现）。网关说明：排队标记（.dsh-market-pending.json）因桌面壳进程存活期未重新扫描而无产物，实际安装以直接 CLI 为准。
+
 **重复项处理（用户指示"有重复的就另外装，把已经有的删掉"）**：
 - better-sidebar：删内置 companion（patch 行 + node_modules/dsh-better-sidebar@0.15.3-eac.1 + registry better-sidebar 记录 + removed 名单），再装 0.17.1（bundle 通道，避免双挂载——zip 内 cordis.patch.yml 有显式警告）。
 - web-ui-task-board / web-ui-git-graph / web-ui-remote-web-ui：删 registry 旧记录（0.1.x 时代安装态），装 0.3.13 新版。
