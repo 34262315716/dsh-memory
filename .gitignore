@@ -52,3 +52,9 @@ lib/client.js.map
 # GitNexus 索引缓存与注入的技能副本（analyze 时自动重建）
 .gitnexus/
 .claude/
+
+# 探针/认证残留（绝不允许进库）
+ck.txt
+*cookie*.txt
+boot*.html
+probe-*.txt
