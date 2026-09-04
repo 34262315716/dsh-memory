@@ -17,21 +17,26 @@ const CFG = () => ({
 const HITS = [{ id: 'mem-x', content: '测试记忆内容：用户偏好纯白设定图', score: 0.6, layer: 'sm', updated_at: Date.now() }]
 
 /** 组装一个可触发的注入管线实例。 */
-function setup({ hits = HITS } = {}) {
+function setup({ hits = HITS, cfg = CFG } = {}) {
   const events = {}
   const logs = []
   const ctx = { on: (name, cb) => { events[name] = cb } }
   attachInjectPipeline(ctx, {
     store: { search: async () => (typeof hits === 'function' ? hits() : hits) },
-    getCfg: CFG,
+    getCfg: cfg,
     wsRegistry: { list: () => [] },
     logStore: (level, ev, data) => logs.push(data),
   })
   const handler = events['agent/pre-step']
+  // 默认 agent 复用同一实例：session.events 跨调用累积（模拟真实会话步数推进）
+  const sharedAgent = { id: 'agent-1', session: { events: [] } }
   const call = async (text, next, opts = {}) => {
     const messages = opts.messages ?? (text ? [userMsg(text)] : [])
-    const agent = opts.agent ?? { id: 'agent-1', session: { events: [] } }
-    return handler({ messages, agent, turn: 1, step: 1, signal: {} }, next)
+    const agent = opts.agent ?? sharedAgent
+    const result = await handler({ messages, agent, turn: 1, step: 1, signal: {} }, next)
+    // 模拟本步完成：push step/start（下次 pre-step 时步号 +1，对齐 agent-loop 真实时序）
+    if (agent.session) agent.session.events.push({ type: 'step/start', data: { turn: 1 } })
+    return result
   }
   return { call, logs }
 }
@@ -54,14 +59,14 @@ console.log('== 1. 修复主行为：记忆块合并进本步 decision，不再�
   check('未调用 agent.inject（agent mock 无 inject 方法，调用即 TypeError）', true)
 }
 
-console.log('== 2. 签名去抖：同 query 重复 pre-step 不注入 ==')
+console.log('== 2. 步距内同 query 跳过（纯步距节流；步距到则必检） ==')
 {
   const { call } = setup()
   const fallback = async () => ({ kind: 'enter', messages: [userMsg('同一个问题'), { type: 'context' }] })
   const d1 = await call('同一个问题', fallback)
   const d2 = await call('同一个问题', fallback)
   check('首次注入', d1.messages.length === 3)
-  check('重复同 query 原样放行（无记忆块）', d2.messages.length === 2)
+  check('步距内重复同 query 原样放行（无记忆块）', d2.messages.length === 2)
 }
 
 console.log('== 3. 步距节流 + 恢复：按真实步数计数（stepInterval=2） ==')
@@ -125,6 +130,38 @@ console.log('== 4. 注入块 hash 去抖：检索结果未变则跨轮不重复�
   check('第三轮同 hits 不重复注入', d3.messages.length === 2)
 }
 
+console.log('== 4b. 同 query 步距到 → 必检（命中内容变化则再次注入） ==')
+{
+  let n = 0
+  const { call } = setup({ hits: () => [{ id: `memq-${++n}`, content: `新记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
+  const fallback = async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] })
+  const d1 = await call('同一个问题', fallback) // step1
+  const d2 = await call('同一个问题', fallback) // step2 步距内跳过
+  const d3 = await call('同一个问题', fallback) // step3 步距到 → 重检（新记忆）→ 注入
+  check('首次注入', d1.messages.length === 3)
+  check('步距内同 query 跳过', d2.messages.length === 2)
+  check('步距到同 query 重检并注入（检索出更新内容）', d3.messages.length === 3)
+}
+
+console.log('== 7. stepInterval=10 长任务节奏：75 步 → 8 个检索注入点（步 1 首检 + 每满 10 步） ==')
+{
+  const CFG10 = () => ({ ...CFG(), stepInterval: 10 })
+  let n = 0
+  const { call, logs } = setup({
+    cfg: CFG10,
+    hits: () => [{ id: `mem10-${++n}`, content: `记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+  })
+  const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const injected = []
+  for (let i = 1; i <= 75; i++) {
+    const d = await call(`第 ${i} 步的工作内容 ${i}`, fallback)
+    if (d.messages.length === 2) injected.push(i) // context + 记忆块 = 注入了
+  }
+  check('75 步内注入于步 1,11,21,31,41,51,61,71', injected.join(',') === '1,11,21,31,41,51,61,71')
+  check('8 次注入 = 1 次首检 + 7 次满 10 步', injected.length === 8)
+  check('日志 step 与注入步号一致', logs.map((l) => l.step).join(',') === injected.join(','))
+}
+
 console.log('== 5. 守卫：无真实用户文本 / 空检索 / reject 均不注入 ==')
 {
   const { call } = setup()
@@ -141,11 +178,11 @@ console.log('== 5. 守卫：无真实用户文本 / 空检索 / reject 均不注
   check('reject 决策：原样透传、不注入', d3?.kind === 'reject' && d3?.messages === undefined)
 }
 
-console.log('== 6. 日志仍记录注入事件（查询/命中/分数/scope） ==')
+console.log('== 6. 日志仍记录注入事件（步号/查询/命中/分数/scope） ==')
 {
   const { call, logs } = setup()
   await call('日志验证问题', async () => ({ kind: 'enter', messages: [userMsg('日志验证问题'), { type: 'context' }] }))
-  check('注入日志已记录 query/ids', logs.length === 1 && logs[0].query.includes('日志验证问题') && logs[0].ids?.[0] === 'mem-x')
+  check('注入日志含 step=1 与 query/ids', logs.length === 1 && logs[0].step === 1 && logs[0].query.includes('日志验证问题') && logs[0].ids?.[0] === 'mem-x')
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

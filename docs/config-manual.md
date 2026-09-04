@@ -42,7 +42,7 @@
 | `scope` | `''` | string | 留空 = global；可收窄到工作目录名 |
 | `injectMaxTokens` | `800` | 100–4000 | 每次自动注入 token 预算 |
 | `injectMinScore` | `0.02` | 0–1 | 注入最低相关分（RRF 量纲：0.02 ≈ 至少一路排前 10）。**想更少打扰调大到 0.05** |
-| `stepInterval` | `2` | 1–10 | 每 N 步全量重检索（越大越省计算） |
+| `stepInterval` | `10` | 1–10 | 每 N 步全量重检索（步距按 agent 会话真实步数计；到点必检，同 query 也重检，重复注入由内容 hash 去抖） |
 | `maxRecentPerAgent` | `6` | 1–50 | 每个 agent 最近注入窗口（防循环） |
 | `maxVersionsPerMemory` | `8` | 1–50 | 每条记忆世界线版本数 |
 
