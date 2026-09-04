@@ -2,6 +2,17 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.23 — 自主轮次注入回归：不需要用户消息也能自动注入相关记忆（2026-09-04）
+
+v0.9.22 修复"幽灵轮次"后用户指出原始设计意图：**注入不该依赖用户消息**——goal 长任务、后台自主轮次（AI 自己干活时）也应每走 N 步自动注入相关记忆。排查发现这条路从未走过：
+
+- **历史事实**：`if (!text) return next()` 守卫（`text` 来自 `extractUserText`，只认 `source.kind === 'user'` 消息）一直存在，而 goal-round-driver 的自动轮次消息 `source.kind === 'goal'`、工具结果步无 user 消息——自主轮次 pre-step 的 query 恒为空，**缓存去抖链之外还有一堵隐形的"无用户文本即跳过"墙**。所有 inject 日志的 query 都是用户原文，佐证自主轮次从未注入过（与 v0.8.3 的 minScore 量纲失配同类：只能靠检查实际链路有没有触发发现）。
+- **实现**：新增 `util.extractWorkText(agent, limit)`——query 兜底：从 `agent.session.events` 逆序取最近的 `user/message` 与 `assistant/message` 文本（跳过插件注入块，避免自引用）拼成工作上下文（≤800 字）。注入函数改为 `extractUserText(claimed) || extractWorkText(agent)`，两者皆空才跳过。
+- **节流语义归位**：`currentStep++` 恢复为每次 pre-step 步进（count 所有步，含工具/自主步）——v0.9.22 修掉的"记忆块独立 step 虚增步数"已不存在，所以按真实步数计不虚增，`stepInterval=2` 恢复"每 N 步全量重检索"的原始语义（config-manual 记载）。连续两个用户轮次夹一个工具步 → 两轮都注入（3b 测试钉死）。
+- **注入方式保持 decision 合并**（v0.9.22）：自主轮次注入块与 context 同一步生成，模型把记忆当上下文继续工作，**不会产生幽灵轮次**（next-step 队列始终为空，turn 正常收尾）——修复方案反而是自主注入变安全的必要条件。
+- **测试**：`test-inject-pipeline.mjs` 15 → 23 项：新增自主轮次注入成功（query 含最近 assistant 工作内容+历史任务）、无 session 不注入、会话仅注入块不注入、无文本步计数。
+- **验证**：13 套测试全绿；副本 `lib/pipelines/inject.js` + `lib/util.js` md5 同步；重启 EAC 生效。
+
 ## v0.9.22 — 注入"幽灵轮次"修复：记忆块不再让模型多答一轮（2026-09-04）
 
 用户反馈：**每次 AI 回复完之后，记忆插件把记忆注入进来，AI 又接着回答一轮**。调查定位（先在引擎侧取证，再改插件侧）:

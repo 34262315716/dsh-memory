@@ -28,10 +28,11 @@ function setup({ hits = HITS } = {}) {
     logStore: (level, ev, data) => logs.push(data),
   })
   const handler = events['agent/pre-step']
-  const call = async (text, next) => handler(
-    { messages: [userMsg(text)], agent: { id: 'agent-1' }, turn: 1, step: 1, signal: {} },
-    next,
-  )
+  const call = async (text, next, opts = {}) => {
+    const messages = opts.messages ?? (text ? [userMsg(text)] : [])
+    const agent = opts.agent ?? { id: 'agent-1', session: { events: [] } }
+    return handler({ messages, agent, turn: 1, step: 1, signal: {} }, next)
+  }
   return { call, logs }
 }
 
@@ -63,7 +64,7 @@ console.log('== 2. 签名去抖：同 query 重复 pre-step 不注入 ==')
   check('重复同 query 原样放行（无记忆块）', d2.messages.length === 2)
 }
 
-console.log('== 3. 步距节流 + 恢复：连续轮次注入节奏（stepInterval=2） ==')
+console.log('== 3. 步距节流 + 恢复：按真实步数计数（stepInterval=2） ==')
 {
   // 每轮检索结果不同（避开 blockHash 去抖干扰，单独验证节流）
   let n = 0
@@ -75,6 +76,42 @@ console.log('== 3. 步距节流 + 恢复：连续轮次注入节奏（stepInterv
   check('第一轮注入', d1.messages.length === 3)
   check('第二轮被步距节流跳过', d2.messages.length === 2)
   check('第三轮恢复注入', d3.messages.length === 3)
+
+  // 3b：无文本步（工具/自主步）同样消耗步数——连续两轮用户消息中间夹工具步 → 第二轮也注入
+  let m = 0
+  const { call: callB } = setup({ hits: () => [{ id: `mem2-${++m}`, content: `记忆${m}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
+  const db1 = await callB('甲问题', fallback)
+  const dbMid = await callB(null, fallback) // 模拟工具结果步（无真实用户文本）
+  const db2 = await callB('乙问题', fallback)
+  check('3b 甲问题注入', db1.messages.length === 3)
+  check('3b 工具步不注入但计数', dbMid.messages.length === 2)
+  check('3b 乙问题步距已到、恢复注入', db2.messages.length === 3)
+}
+
+console.log('== 3c. 自主轮次注入（v0.9.23）：无用户消息时用会话工作上下文兜底 ==')
+{
+  const events = [
+    { type: 'user/message', data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '原始任务：搭建记忆系统' }] } },
+    { type: 'assistant/message', data: { message: { role: 'assistant', source: { provider: 'mock' }, content: [{ type: 'text', text: '我正在处理图谱构建' }] } } },
+  ]
+  const { call, logs } = setup()
+  const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const d = await call(null, fallback, { agent: { id: 'agent-1', session: { events } } })
+  check('自主轮次注入成功（context + 记忆块）', d.messages.length === 2 && d.messages.at(-1)?.source?.kind === 'plugin')
+  check('检索 query 用了最近 assistant 工作内容', logs.at(-1)?.query?.includes('图谱构建'))
+  check('且包含历史任务文本', logs.at(-1)?.query?.includes('原始任务'))
+}
+
+console.log('== 3d. 自主轮次守卫：无会话 / 会话仅注入块 / 均不注入 ==')
+{
+  const { call } = setup()
+  const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const d1 = await call(null, fallback, { agent: { id: 'no-session' } })
+  check('agent 无 session：不注入', d1.messages.length === 1)
+
+  const pluginOnly = [{ type: 'user/message', data: { role: 'user', source: { kind: 'plugin', plugin: 'dsh-memory' }, content: [{ type: 'text', text: '[记忆] 注入块' }] } }]
+  const d2 = await call(null, fallback, { agent: { id: 'agent-1', session: { events: pluginOnly } } })
+  check('会话仅插件注入块：不注入', d2.messages.length === 1)
 }
 
 console.log('== 4. 注入块 hash 去抖：检索结果未变则跨轮不重复注入 ==')
