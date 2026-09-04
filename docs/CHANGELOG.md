@@ -2,6 +2,22 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.22 — 注入"幽灵轮次"修复：记忆块不再让模型多答一轮（2026-09-04）
+
+用户反馈：**每次 AI 回复完之后，记忆插件把记忆注入进来，AI 又接着回答一轮**。调查定位（先在引擎侧取证，再改插件侧）:
+
+- **完整触发链**（dsh-agent-loop `turn()` 循环 + dsh-memory 注入方式共同导致）：
+  1. 用户消息 → `agent/pre-step`（step 1）→ dsh-memory 检索命中 → 调用 `payload.agent.inject(记忆块)`；
+  2. `agent.inject()` 实现为 `send(input, "next-step", false)`——把记忆块塞进 **next-step 队列**（不唤醒，因为 agent 正在跑）；
+  3. step 1 的模型生成结束（`turnEnds` 已置位），但 turn 循环末尾 `if (turnEnds && inbox.nextStep.length === 0) break` 检查发现 **nextStep 队列非空 → 不结束**，`target = "next-step"` 继续循环；
+  4. step 2 的 `agent/pre-step` claim 到记忆块——dsh-memory 的 `extractUserText` 只认 `source.kind === 'user'`（记忆块是 plugin）→ 不注入、`return next()` 原样放行；
+  5. 记忆块被 append 进 session，模型**被迫再生成一轮**"接着回答"记忆块。
+  - GUI 观感即"AI 回复完 → 记忆块冒出来 → AI 再答一遍"。注入日志只有一条（21:26:14，query=用户原文），佐证记忆块不是第二次检索注入，而是同一次注入被排到下一步消费。
+- **修复**：弃用 `agent.inject()`，改为 **waterfall 链内合并**——`await next()` 拿到底层 decision 后 `return {...decision, messages: [...decision.messages, 记忆块]}`。记忆块与 claimed/context 同一 step 内 append + 生成，next-step 队列不再被塞东西，turn 正常结束，模型只答一轮。此模式与官方先行者 `dsh-agent-instructions` 的 pre-step 插入完全一致（它也是 `next()` 后改 `decision.messages`）。reject 决策原样透传。
+- **节流语义微调**：`currentStep++` 从"每次 pre-step"移回"有真实用户文本的 step"——此前记忆块独立 step 虚增步数，让 `stepInterval=2` 形同虚设（几乎每轮都注入）；修复后按真实用户轮次计数，每 2 轮注入 1 次（可调 settings `stepInterval=1` 恢复每轮）。
+- **新增专项测试** `test-inject-pipeline.mjs`（15 项）：decision 合并主行为（用户+context+记忆块同一步、溯源 form=recall）、签名去抖、步距节流+恢复、blockHash 去抖、无文本/空检索/reject 守卫、注入日志。agent mock 故意不提供 `inject` 方法——回归到 `agent.inject()` 会 TypeError 直接暴露。
+- **验证**：全 12 套测试绿（含既有注入行为未破坏：test-crash-safety 10 项事件挂载、test-events 21 项等）；副本 `lib/pipelines/inject.js` md5 同步；重启 EAC 生效。
+
 ## v0.9.21 — EAC 5.3.6 适配：新内核（dsh 0.1.2-alpha.1 / cordis 4.0.1）兼容（2026-08-31）
 
 EAC 桌面端升级 v5.3.6（内核 dsh 0.1.2-alpha.1 + cordis 4.0.1 + dsh-llm/settings/tools 0.1.2-alpha.1）后全面适配。全过程与对照见 [`eac-5.3-adapt-plan.md`](eac-5.3-adapt-plan.md)。
