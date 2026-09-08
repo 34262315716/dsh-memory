@@ -2,6 +2,25 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.30 — 设置页空白根治：KeyInput 误用 React 保留属性 ref（#290）+ credentials 官方形态（2026-09-09）
+
+用户报告「GUI 设置里有『记忆』标签但点进去无任何配置项」（9/3 至今一直未真正解决）。两个子代理并行调查，A 子代理**无头 Chrome 实机复现 + 内核源码双重定案**：
+
+### 根因：React #290（`Element ref was specified as a string`）
+- `client/settings.jsx` 的 `KeyInput` 组件把 **React 保留属性 `ref` 当普通 prop** 传字符串（`ref='MEMORY_EMBEDDING_API_KEY'`）→ 元素创建即抛 #290。
+- 内核 `dsh-client-ui-renderer` 的 SlotErrorBoundary 把崩溃的 settings.section entry **abdicate 永久退休**（导航列表用 raw entries 不排除 abdicated）→ 「标签还在、内容区永久空白 `<div data-slot-error>`」，直到整页重载重新注册。**每次点开都崩**，故重启依旧。
+- 实机 console：`slot entry crashed in 'settings.section': Minified React error #290 (args[]=MEMORY_EMBEDDING_API_KEY)`。
+- **修复**：`KeyInput` 的 `ref` prop 改名 `keyRef`（定义 + 函数体 + embedding/reranker 两处调用点）。教训：自定义组件永远不要用 `ref`/`key` 当 JSX prop 名。
+
+### 附带修复（调查发现，密钥功能从未生效）
+- **credentials API 形态全错**：官方为 `describe([ref])` / `set(ref, value)`（返回 `{ok, value:{[ref]:{configured,writable}}}`）；dsh-memory 此前用 `describe({refs:[ref]})` / `set({ref,value})` + 多层 `result.…` 解包 → 被 try/catch 兜住不崩但**密钥永远显示未配置、保存从未成功**。4 处调用全部改为官方形态（KeyInput×2 + refiner 密钥区×2）。
+- **ErrorBoundary 兜底**：给 `MemorySettingsSection` 外包自家 `SettingsErrorBoundary`（显示具体错误 + 重试按钮）——即使未来再有渲染异常，也不再静默空白/abdicate，且错误可读。
+
+### 验证
+- client bundle 重建（90801 B）；双副本 md5 同步；版本 0.9.29 → 0.9.30。
+- ⚠️ 生效方式：前端刷新页面（或重启 EAC）后点「设置 → 记忆」，应能看到完整表单；密钥卡片应显示真实「已配置」状态。
+- 遗留（未处理，待单独评估）：`~/.dsh/.credentials.yaml` 的 `version:` 是数字而官方期望字符串，dsh-credentials-local 持续报 TypeError——不影响本修复，但可能让 credentials RPC 行为异常，后续单独跟进。
+
 ## v0.9.29 — 交叉审查修复批（v0.9.25~28）：minScore 量纲失配复发 + 凭据段状态机注释边界 + rerank 熔断（2026-09-08）
 
 子代理交叉审查（范围 4d445b0..834d93f）结论「可发布、无 P0」，P1×2 + P2×1 全部修复：

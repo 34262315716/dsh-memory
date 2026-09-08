@@ -3,7 +3,7 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 settings.section 插槽。
  * 用 ctx.settingsScope 读写 settings.yaml 的 `memory` 命名空间，live 生效。
  */
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 
 /** 命名空间快照容错：未注册/读取失败时返回空对象（供应商目录为空也不崩）。 */
 const safeSnapshot = (scope) => {
@@ -100,29 +100,31 @@ function CheckboxRow({ label, hint, checked, onChange }) {
   )
 }
 
-/** 密钥输入卡片：password 写凭据文件（~/.dsh/.credentials.yaml），绝不回显；ref 为凭据键名。 */
-function KeyInput({ api, ref, hint }) {
+/** 密钥输入卡片：password 写凭据文件（~/.dsh/.credentials.yaml），绝不回显；keyRef 为凭据键名。
+ *  ⚠️ 不能命名为 ref——React 保留属性，传字符串会抛 #290（设置页永久空白的根因，v0.9.30）。
+ *  credentials API 走官方形态：describe([ref]) / set(ref, value)（v0.9.30 修正，此前对象形态从未生效）。 */
+function KeyInput({ api, keyRef, hint }) {
   const [state, setState] = useState({ checking: false, configured: false, writing: false })
   const [draft, setDraft] = useState('')
   const check = async () => {
     setState((s) => ({ ...s, checking: true }))
     try {
-      const r = await api.credentials.describe({ refs: [ref] })
+      const r = await api.credentials.describe([keyRef])
       setState((s) => ({
         ...s,
-        configured: Boolean(r?.result?.ok && r.result.value?.credentials?.[ref]?.configured),
+        configured: Boolean(r?.ok && r.value?.[keyRef]?.configured),
         checking: false,
       }))
     } catch {
       setState((s) => ({ ...s, checking: false }))
     }
   }
-  useEffect(() => { void check() }, [ref])
+  useEffect(() => { void check() }, [keyRef])
   const save = async () => {
     if (!draft) return
     setState((s) => ({ ...s, writing: true }))
     try {
-      await api.credentials.set({ ref, value: draft })
+      await api.credentials.set(keyRef, draft)
       setDraft('')
       await check()
     } catch (err) {
@@ -138,15 +140,15 @@ function KeyInput({ api, ref, hint }) {
         {state.checking
           ? <span style={{ color: '#888', fontSize: 12 }}>检查中…</span>
           : state.configured
-            ? <span style={{ color: '#4caf50', fontSize: 12 }}>● 已配置（{ref}）</span>
-            : <span style={{ color: '#e67e22', fontSize: 12 }}>○ 未配置（{ref}）</span>}
+            ? <span style={{ color: '#4caf50', fontSize: 12 }}>● 已配置（{keyRef}）</span>
+            : <span style={{ color: '#e67e22', fontSize: 12 }}>○ 未配置（{keyRef}）</span>}
       </div>
       {hint ? <p style={{ color: '#888', fontSize: 12, margin: '6px 0' }}>{hint}</p> : null}
       <div style={{ display: 'flex', gap: 8 }}>
         <input
           style={{ ...inputStyle, marginTop: 0, flex: 1 }}
           type="password"
-          placeholder={`粘贴密钥到 ${ref}（留空不改）`}
+          placeholder={`粘贴密钥到 ${keyRef}（留空不改）`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
         />
@@ -162,8 +164,40 @@ function KeyInput({ api, ref, hint }) {
   )
 }
 
+/**
+ * 自家 ErrorBoundary（v0.9.30，审查发现）：内核 SlotErrorBoundary 会把渲染期抛错的
+ * settings.section entry 标记 abdicate 永久退休——「标签还在、点开内容永久空白」且整页
+ * 不刷新不恢复。这里兜一层：任何渲染/effect 异常显示具体错误 + 可重试，而不是静默空白。
+ */
+class SettingsErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null } }
+  static getDerivedStateFromError(error) { return { error } }
+  componentDidCatch(error, info) {
+    console.error('[dsh-memory-client] 设置面板渲染出错:', error, info)
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 16 }}>
+          <p style={{ color: '#e67e22', fontWeight: 500, fontSize: 13 }}>⚠ 设置面板渲染出错</p>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#e66', background: '#1e1e1e', padding: 8, borderRadius: 6, margin: '8px 0' }}>{String(this.state.error?.message ?? this.state.error)}</pre>
+          <button onClick={() => this.setState({ error: null })}
+            style={{ padding: '4px 14px', borderRadius: 6, border: '1px solid #555', background: '#2a2a2a', color: '#eee', cursor: 'pointer' }}>
+            重试
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 /** 设置面板主组件（侧边栏"记忆"导航项的完整设置菜单）。 */
-export function MemorySettingsSection({ scope, api, llmScope, deepseekScope }) {
+export function MemorySettingsSection(props) {
+  return <SettingsErrorBoundary><MemorySettingsSectionInner {...props} /></SettingsErrorBoundary>
+}
+
+function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
   const [snap, setSnap] = useState(() => scope.getSnapshot())
   useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope])
 
@@ -253,8 +287,8 @@ export function MemorySettingsSection({ scope, api, llmScope, deepseekScope }) {
     const ref = keyRef()
     setKeyState((s) => ({ ...s, ref, checking: true }))
     try {
-      const response = await api.credentials.describe({ refs: [ref] })
-      const configured = Boolean(response?.result?.ok && response.result.value?.credentials?.[ref]?.configured)
+      const response = await api.credentials.describe([ref])
+      const configured = Boolean(response?.ok && response.value?.[ref]?.configured)
       setKeyState((s) => ({ ...s, configured, checking: false }))
     } catch {
       setKeyState((s) => ({ ...s, checking: false }))
@@ -267,7 +301,7 @@ export function MemorySettingsSection({ scope, api, llmScope, deepseekScope }) {
     const ref = keyRef()
     setKeyState((s) => ({ ...s, writing: true }))
     try {
-      await api.credentials.set({ ref, value: keyDraft })
+      await api.credentials.set(ref, keyDraft)
       setKeyDraft('')
       setMsg(`✅ 密钥已保存到凭据文件（${ref}，不回显不落 settings）`)
       await checkKey()
@@ -590,7 +624,7 @@ export function MemorySettingsSection({ scope, api, llmScope, deepseekScope }) {
         )}
         <KeyInput
           api={api}
-          ref={drafts['embedding.apiKeyEnv'] ?? embedding.apiKeyEnv ?? 'MEMORY_EMBEDDING_API_KEY'}
+          keyRef={drafts['embedding.apiKeyEnv'] ?? embedding.apiKeyEnv ?? 'MEMORY_EMBEDDING_API_KEY'}
           hint="硅基流动控制台创建密钥；写入 ~/.dsh/.credentials.yaml（私有文件），不进设置/记忆库、界面不回显。"
         />
 
@@ -628,7 +662,7 @@ export function MemorySettingsSection({ scope, api, llmScope, deepseekScope }) {
         )}
         <KeyInput
           api={api}
-          ref={drafts['reranker.apiKeyEnv'] ?? reranker.apiKeyEnv ?? 'MEMORY_RERANK_API_KEY'}
+          keyRef={drafts['reranker.apiKeyEnv'] ?? reranker.apiKeyEnv ?? 'MEMORY_RERANK_API_KEY'}
           hint="与嵌入可共用同一密钥；写入凭据文件，不进设置/记忆库、界面不回显。"
         />
       </div>
