@@ -2,6 +2,15 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.28 — P0.1 画像召回加权：store.search 类型 boost，注入路径画像弱命中不再被碾压（2026-09-08）
+
+ROADMAP v0.10 P0.1（画像类记忆注入加权）落地——8/23 排查注入问题时定位的已知缺陷（mem-433c7806）：「查丹道记录」注入回图谱治理记录这类答非所问，根因是画像类 content 短/关键词少，RRF 里被含泛词的长记忆靠多路命中碾压。
+
+- **store.search 新增 `boost` 参数**：`boost: { profile: 3 }` 按记忆 type 放大排序分。加权时机在 rerank 候选选取**之前**——被抬升的画像才有机会进精排 topK 与 minScore 门槛（弱命中 ×3 后 0.008~0.016 → 0.024~0.048，越过 0.02 注入门槛）；与 reranker norm 交互自洽（maxRrf 含加权分，融合公式归一化后权重自然传导）。类型批量查询走 `IN` 分块（≤200/批），无 N+1。
+- **仅注入路径生效**：`pipelines/inject.js` pre-step 检索传 `boost: { profile: 3 }`（画像跨项目在 global scope，检索本就含 global 公共层）；`memory_search` 工具/预热直取等一律不传 → 零行为变化。
+- **守护测试**：test.mjs 新增第 9 节 7 项（无 boost 长记忆排前基线 / boost 后画像升至首位 / 分数精确 ×3 / 其他类型不受影响 / 高门槛 0.05 无 boost 画像被滤 / boost 后过门槛 / 不相关类型 boost 不改排序）。
+- **验证**：13 套 256 项全绿；副本 `lib/store.js` + `lib/pipelines/inject.js` + package.json md5 同步；版本 0.9.27 → 0.9.28。⚠️ 重启生效后可用注入日志观察画像命中占比（P0.1 验证项）。
+
 ## v0.9.27 — LLM 跑题输出加固：严格 JSON 抽取共享化 + 强化重试一次（2026-09-08）
 
 v0.9.25/26 重启验证时实测画像蒸馏：**LLM 链路已通（reasoningEffort off 生效，模型有实质输出），但输出自由叙述而非 JSON**（`Unexpected token '）', ..."使用本地量化模型"...`）——关推理后部分模型不再自觉守 JSON 格式。

@@ -89,5 +89,32 @@ console.log('== 8. 凭据读取兼容两种格式（v0.9.25） ==')
   rmSync(cdir, { recursive: true, force: true })
 }
 
+console.log('== 9. 类型加权 boost：画像短记忆不再被泛词长记忆碾压（P0.1） ==')
+{
+  const bdir = mkdtempSync(join(tmpdir(), 'dsh-boost-'))
+  const s = new MemoryStore(join(bdir, 't.db'), {})
+  // 泛词长记忆（多关键词 + 含查询子串）vs 画像短记忆（单稀有词）
+  const noteId = await s.add({ layer: 'sm', type: 'note', scope: 'test', content: '今天把丹道修炼记录与图谱治理方法整理完成，修复了注入链路问题。', keywords: ['丹道', '修炼', '记录', '图谱', '治理'] })
+  const profId = await s.add({ layer: 'sm', type: 'profile', scope: 'test', content: '用户修行丹道，近期课题是接纳情绪。', keywords: ['丹道'], aspect: 'habit' })
+  const q = '丹道修炼记录'
+  const plain = await s.search(q, { scope: 'test', limit: 5, minScore: 0 })
+  const plainTop = plain.find((h) => h.id === noteId)?.score ?? 0
+  const profPlain = plain.find((h) => h.id === profId)?.score ?? 0
+  check('无 boost：长记忆排前（画像弱势基线）', plain[0]?.id === noteId && profPlain < plainTop)
+  const boosted = await s.search(q, { scope: 'test', limit: 5, minScore: 0, boost: { profile: 3 } })
+  const bTop = boosted.find((h) => h.id === profId)
+  const bNote = boosted.find((h) => h.id === noteId)
+  check('boost profile×3：画像升至首位', boosted[0]?.id === profId)
+  check('画像分数 ×3', Math.abs((bTop?.score ?? 0) - profPlain * 3) < 0.002)
+  check('其他类型分数不受影响', Math.abs((bNote?.score ?? 0) - plainTop) < 1e-9)
+  const gate = await s.search(q, { scope: 'test', limit: 5, minScore: 0.05 })
+  check('无 boost：画像弱命中不达高门槛', !gate.some((h) => h.id === profId))
+  const gateB = await s.search(q, { scope: 'test', limit: 5, minScore: 0.05, boost: { profile: 3 } })
+  check('boost 后画像过门槛（弱命中也能注入）', gateB.some((h) => h.id === profId))
+  const otherBoost = await s.search(q, { scope: 'test', limit: 5, minScore: 0, boost: { lesson: 3 } })
+  check('不相关类型 boost 不改变排序', otherBoost[0]?.id === noteId)
+  s.close(); rmSync(bdir, { recursive: true, force: true })
+}
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail > 0 ? 1 : 0)
