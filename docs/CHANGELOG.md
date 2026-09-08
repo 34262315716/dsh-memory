@@ -2,6 +2,16 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.26 — reranker 装配 bug：index.js 组装丢 enabled + embedder.js 判定错位 → reranker 从未创建（2026-09-08）
+
+v0.9.25 重启验证时发现：凭据修复后嵌入已恢复 remote 4096 维，但 init 仍 `reranker: null` 且无任何警告（enabled=true、key 可读、无降级 warning 三态并存）。
+
+- **根因（比凭据更深的装配 bug，自 embedding seam 引入起就存在）**：`lib/index.js` 组装传给 `createEmbeddingServices` 的 `rerank` 参数时，在 `rkCfg.enabled ? {...}` 分支里**剥离了 enabled 字段**（只传 model/baseUrl/apiKey）；而 `lib/embedder.js` 的启用判定是 `if (cfg.rerank?.enabled)` → 对象上没有 enabled → **恒 false → reranker 永不创建**。与密钥、开关、GUI 均无关——v0.9.19 修 GUI 保存、v0.9.25 修凭据读取，都被这一层挡住。
+- **修复**：`embedder.js` 判定改为「`cfg.rerank` 对象存在即启用」（调用方已把关开关，注释固化该契约）；`index.js` 组装对象补 `enabled: true` 透传（双保险）。
+- **测试**：`test-embedder.mjs` 新增 2 项守护（rerank 对象不带 enabled 字段时也创建 reranker / 缺省不创建）；19 项全绿。
+- **验证**：v0.9.25 全部 14 套 247 项基础上重跑相关套件无回归；副本 `lib/embedder.js` + `lib/index.js` + package.json md5 同步。
+- ⚠️ 需再次重启 EAC：init 预期 `reranker: remote`（Qwen3-VL-Reranker-8B / 硅基流动），注入检索自此带后置精排。
+
 ## v0.9.25 — 双静默故障修复：凭据 refs 嵌套读不到 + 蒸馏推理吞 token（2026-09-08）
 
 用户要求盘点项目现状，审计运行日志发现两个**长期静默**的链路故障（均无 GUI 提示、均不影响主流程存活，属"只有查实际链路才会发现"的第三例）：

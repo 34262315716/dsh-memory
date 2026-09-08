@@ -40,6 +40,13 @@ const reranker = new RemoteReranker({ baseUrl: 'https://mock', apiKey: 'x', mode
 const rr = await reranker.rerank('q', ['a', 'b'])
 check('reranker 返回全部 doc 的分数（按 docs 顺序）', rr.length === 2 && rr[0].score === 0.1 && rr[1].score === 0.9)
 
+// 4b. createEmbeddingServices 启用判定（v0.9.25 装配 bug 守护）：
+//     index.js 组装后传入的 rerank 对象不带 enabled 字段，判定必须是「存在即启用」
+const svcR = await createEmbeddingServices({ provider: 'rule', rerank: { model: 'r', apiKey: 'x' } }, { fetchImpl: mockRerankFetch })
+check('rerank 对象存在即创建 reranker（不带 enabled 字段）', svcR.reranker?.name === 'remote')
+const svc0 = await createEmbeddingServices({ provider: 'rule' }, { fetchImpl: mockRerankFetch })
+check('rerank 缺省不创建 reranker', svc0.reranker === null)
+
 // 5. 真实硅基流动 API（凭据文件读密钥；兼容 refs 嵌套缩进——修复前顶格匹配恒 undefined 致本测试静默跳过）
 const cred = readFileSync(join(homedir(), '.dsh', '.credentials.yaml'), 'utf8')
 const key = (cred.match(/^\s*MEMORY_EMBEDDING_API_KEY:\s*(\S+)/m) ?? [])[1]
