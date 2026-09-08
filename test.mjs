@@ -1,5 +1,6 @@
 import { MemoryStore, tokenize, jaccard } from './lib/store.js'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { readCredential } from './lib/util.js'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -59,5 +60,34 @@ check('已删记忆不再命中', !r3.some((r) => r.id === id2))
 
 store.close()
 rmSync(dir, { recursive: true, force: true })
+console.log('== 8. 凭据读取兼容两种格式（v0.9.25） ==')
+{
+  const cdir = mkdtempSync(join(tmpdir(), 'dsh-cred-'))
+  const nested = join(cdir, 'nested.yaml')
+  writeFileSync(nested, [
+    'version: 1',
+    'refs:',
+    '  OPENCODE_GO_API_KEY: sk-old',
+    '  MEMORY_EMBEDDING_API_KEY: sk-embed-new',
+    '  MEMORY_RERANK_API_KEY: sk-rerank-new',
+    'records:',
+    '  client-connection/browser-session:',
+    '    kind: grant',
+    '    payload:',
+    '      secret: uBy-not-a-key',
+    '',
+  ].join('\n'), 'utf8')
+  check('refs 嵌套格式可读到密钥（修复前恒 undefined）', readCredential('MEMORY_EMBEDDING_API_KEY', nested) === 'sk-embed-new')
+  check('refs 嵌套 reranker 键同样命中', readCredential('MEMORY_RERANK_API_KEY', nested) === 'sk-rerank-new')
+  check('records 段内不误匹配（值不泄露为密钥）', readCredential('secret', nested) === undefined)
+  check('缺失键返回 undefined', readCredential('NOPE_KEY', nested) === undefined)
+
+  const flat = join(cdir, 'flat.yaml')
+  writeFileSync(flat, 'MEMORY_EMBEDDING_API_KEY: sk-flat\nEMPTY_KEY:\n', 'utf8')
+  check('旧平铺格式仍兼容', readCredential('MEMORY_EMBEDDING_API_KEY', flat) === 'sk-flat')
+  check('空值键返回 undefined', readCredential('EMPTY_KEY', flat) === undefined)
+  rmSync(cdir, { recursive: true, force: true })
+}
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail > 0 ? 1 : 0)

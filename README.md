@@ -145,10 +145,11 @@ memory:
     graph: true             # 图谱构建
   refiner:
     enabled: false          # LLM 蒸馏提取（默认关，省成本）
-    provider: opencode-go   # 供应商（GUI 下拉预设）
+    provider: deepseek-official  # 供应商（GUI 下拉预设）
     model: deepseek-v4-flash
     apiKeyEnv: MEMORY_REFINER_API_KEY  # 独立密钥槽（供应商未声明 apiKeyEnv 时生效）
-    maxTokens: 800
+    reasoningEffort: off    # 推理档位：off = 关思维链直出 JSON（推理档会吃光 maxTokens 致蒸馏全败，v0.9.25）
+    maxTokens: 1200
   embedding:
     provider: remote        # rule（离线哈希兜底）| remote（OpenAI 兼容 API）| onnx（预留）
     model: Qwen/Qwen3-VL-Embedding-8B  # 4096 维（硅基流动实测）

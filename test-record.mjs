@@ -22,7 +22,7 @@ const note = (msg) => { warn++; console.log('  ⚠️ ' + msg) }
 
 // 1. 嵌入器初始化（凭据文件读密钥；remote 失败自动落 rule）
 const cred = (() => { try { return readFileSync(join(homedir(), '.dsh', '.credentials.yaml'), 'utf8') } catch { return '' } })()
-const key = (cred.match(/^MEMORY_EMBEDDING_API_KEY:\s*(\S+)/m) ?? [])[1]
+const key = (cred.match(/^\s*MEMORY_EMBEDDING_API_KEY:\s*(\S+)/m) ?? [])[1]
 let embedder = null
 if (key) {
   try {

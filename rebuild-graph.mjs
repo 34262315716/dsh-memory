@@ -14,7 +14,7 @@ console.log('backup: memory.db.bak-graph-' + stamp)
 
 // 1. 真嵌入器（凭据文件读密钥，不回显）
 const cred = readFileSync(join(homedir(), '.dsh', '.credentials.yaml'), 'utf8')
-const key = (cred.match(/^MEMORY_EMBEDDING_API_KEY:\s*(\S+)/m) ?? [])[1]
+const key = (cred.match(/^\s*MEMORY_EMBEDDING_API_KEY:\s*(\S+)/m) ?? [])[1]
 if (!key) { console.error('no embedding key'); process.exit(1) }
 const embedder = new RemoteEmbedder({ baseUrl: 'https://api.siliconflow.cn/v1', apiKey: key, model: 'Qwen/Qwen3-VL-Embedding-8B' })
 await embedder.ready()

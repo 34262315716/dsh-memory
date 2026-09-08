@@ -66,9 +66,10 @@
 | `provider` | `opencode-go` | **当前为 `deepseek-official`**（商务模型路由） |
 | `model` | `deepseek-v4-flash` | 提取模型 |
 | `apiKeyEnv` | `MEMORY_REFINER_API_KEY` | 凭据文件 `~/.dsh/.credentials.yaml` 中的键名，**只读键名不读值** |
-| `maxTokens` | `800` | 提取输出上限 |
+| `reasoningEffort` | `off` | **v0.9.25 新增**。推理档位：`off` 关思维链直出 JSON。推理档会先输出大段 reasoning，把 `maxTokens` 吃光 → 正文空/截断 → 蒸馏 100% 失败（此前已持续多日，日志 `Unexpected end of JSON input`） |
+| `maxTokens` | `1200` | 提取输出上限（v0.9.25 由 800 上调，配合关推理） |
 
-> 已知问题（待修，不影响降级）：refiner 若返回空 JSON，日志报 `LLM 提取失败，降级规则路径: Unexpected end of JSON input`，此时自动走规则提取，**功能不中断**。
+> ~~已知问题~~ **v0.9.25 已修复**：refiner 返回空/截断 JSON（日志 `LLM 提取失败，降级规则路径: Unexpected end of JSON input`）的根因 = 推理档位吞 maxTokens；现已默认 `reasoningEffort: off` + `maxTokens: 1200`，重启后应恢复 LLM 提取。
 
 ### 3.4 `embedding`（嵌入，改后重启）
 

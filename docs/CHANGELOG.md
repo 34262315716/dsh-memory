@@ -2,6 +2,29 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.25 — 双静默故障修复：凭据 refs 嵌套读不到 + 蒸馏推理吞 token（2026-09-08）
+
+用户要求盘点项目现状，审计运行日志发现两个**长期静默**的链路故障（均无 GUI 提示、均不影响主流程存活，属"只有查实际链路才会发现"的第三例）：
+
+### ① 凭据读取失效 → 嵌入/重排长期降级 rule
+- **证据链**：`dsh-web.log` 持续 `未配置 embedding apiKey，跳过 remote` → `已降级到 rule embedder`；生产库 init 记录全部 `embedder: rule（dim 256）`、`memory_stats.rerank: false`；而 settings.yaml `reranker.enabled: true`、凭据文件 `MEMORY_EMBEDDING_API_KEY/MEMORY_RERANK_API_KEY` 都在。
+- **根因**：EAC 新内核（0.1.2-alpha.1）把 `~/.dsh/.credentials.yaml` 改写为 `version:1` + `refs:`/`records:` 嵌套结构（密钥行二级缩进），插件 `readCredential()` 用"行首 `startsWith(键名:)`"只匹配顶格 → **全部返回 undefined**（node 复现三键全 undefined）。即语义检索这几周一直是 256 维哈希相似度。
+- **修复**：`readCredential(name, filePath?)` 逐行 trim 匹配 + 跳过 `records:` 段（不误读非密钥凭据），兼容 refs 嵌套与旧平铺两种格式；顺手清理死代码；可选文件路径参数便于单测。
+- **可见性修复**：`createEmbeddingServices` 的降级 warnings 并入 `store.log('info','init')` 事件 detail——以后嵌入/重排降级在 GUI 记忆日志直接可见，不再只躺 console。
+- **同源修复**：`test-embedder.mjs` / `test-record.mjs` / `rebuild-graph.mjs` 三处读 key 的正则同样是顶格匹配 → 真实 API 测试**一直在静默跳过**；改为 `^\s*` 后实测 remote 连通（Qwen3-VL-Embedding-8B **4096 维**）。
+- **测试**：`test.mjs` 新增第 8 节 6 项（refs 嵌套命中/reranker 键/records 段不误匹配/缺失键/旧平铺/空值）；全量 14 套 247 项绿。
+
+### ② refiner 蒸馏 100% 失败 → LLM 提取从未成功
+- **证据链**：`dsh-web.log` 自 v0.9.21 provider 迁移起全是 `LLM 提取失败，降级规则路径: Unexpected end of JSON input` / `LLM 未返回内容`，成功标记 0 条。
+- **根因**：`refiner.js` / `housekeeping.js`（画像蒸馏）调 `ctx.llm.stream()` **未传 `reasoningEffort`** → deepseek-v4-flash（supportsReasoningEffort）走默认推理档位 → `maxTokens: 800` 被 reasoning_content 吃光 → 正文空或截断 → JSON.parse 必败。
+- **修复**：schema 新增 `refiner.reasoningEffort`（默认 `'off'` = 关思维链直出 JSON，内核 `reasoningEfforts.off → null`）；`maxTokens` 默认 800 → 1200；两处 LLM 调用在配置含 effort 时透传（缺省不传，向后兼容旧配置/不支持 effort 的 provider）。
+- **测试**：`test-profile.mjs` 新增第 5 节 4 项（extractWithLlm 传参：reasoningEffort=off / provider-model-maxTokens 透传 / 缺省不传）；画像蒸馏 mock 断言 stream opts（2 项）；22 项全绿。
+
+### 验证与收尾
+- 全量 14 套测试绿：test 22 + phase2 18 + phase3 21 + housekeeping 30 + events 21 + incremental 21 + update-append 9 + edge-types 15 + keyword-filter 8 + embedder 17 + profile 22 + crash-safety 10 + inject-pipeline 29 + record 8/0（含真实 remote 4096 维语义对比不弱于 rule）。
+- 版本 0.9.24 → 0.9.25；副本 `util.js`/`index.js`/`config.js`/`refiner.js`/`tools/housekeeping.js` + package.json md5 同步（web + web-desktop 双副本）。
+- ⚠️ 重启 EAC 后预期：init 日志 `embedder: remote（dim 4096）` + `reranker: remote` → 全库自动重嵌入迁移 + 主题聚类重跑（rule 时代 370+ 主题碎片化应回落）+ refiner 首次成功；随后可做 reranker A/B（ROADMAP P0.2 收尾）。
+
 ## v0.9.24 — 步距节流按 agent 真实步数：每 10 步必检，自主长任务按步注入（2026-09-04）
 
 用户要求：插件自动检测 agent 运行，**每 10 步进行一次检索**（"这个会话 75 步，理论上应有约 7 次主动注入"）。改动：

@@ -1,6 +1,7 @@
 // 阶段四（v0.9.2）：画像分类专项——预热画像取用 / aspect 读写 / 画像蒸馏（mock LLM）
 // 用法: node test-profile.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
 import { apply, scopeOf } from './lib/index.js'
+import { extractWithLlm } from './lib/refiner.js'
 import { MemoryStore } from './lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -56,8 +57,10 @@ console.log('== 3. 画像蒸馏（mock LLM 返回画像 JSON） ==')
 
   const registeredTools = []
   let disposeFn = null
+  const llmOpts = []
   const mockLlm = {
-    stream: async function* () {
+    stream: async function* (opts) {
+      llmOpts.push(opts)
       yield { type: 'text-delta', text: '{"items": [{"content": "用户偏好自建端点与密钥走凭据文件", "aspect": "preference"}, {"content": "用户是深度插件开发爱好者", "aspect": "background"}]}' }
     },
   }
@@ -66,7 +69,7 @@ console.log('== 3. 画像蒸馏（mock LLM 返回画像 JSON） ==')
       enabled: true,
       features: { autoWrite: true, valueGate: true, dedupMerge: true, preStepInject: true, manageTools: true, time: true, graph: true },
       embedding: { provider: 'rule' },
-      refiner: { enabled: true, provider: 'mock', model: 'mock', maxTokens: 800 },
+      refiner: { enabled: true, provider: 'mock', model: 'mock', reasoningEffort: 'off', maxTokens: 800 },
       reranker: { enabled: false },
       housekeeping: { enabled: false },
       dbFile,
@@ -85,6 +88,8 @@ console.log('== 3. 画像蒸馏（mock LLM 返回画像 JSON） ==')
   check('memory_profile_distill 工具已注册', Boolean(distill))
   const out = await distill.execute({ limit: 5 })
   check('蒸馏返回 2 条画像', out.profiles.length === 2)
+  check('画像蒸馏 LLM 调用显式关推理（reasoningEffort=off）', llmOpts.length > 0 && llmOpts.every((o) => o.reasoningEffort === 'off'))
+  check('画像蒸馏 LLM 调用透传 maxTokens', llmOpts.length > 0 && llmOpts.every((o) => o.maxTokens === 800))
   check('画像 aspect 正确', out.profiles[0].aspect === 'preference' && out.profiles[1].aspect === 'background')
   const s1 = new MemoryStore(dbFile, {})
   const profs = s1.list({ layer: 'sm', limit: 20 }).filter((m) => m.type === 'profile')
@@ -135,6 +140,31 @@ console.log('== 4. 坏 JSON 容错（与 auto-write 降级路径一致） ==')
   try { out = await distill.execute({ limit: 5 }) } catch { threw = true }
   check('坏 JSON 不抛错（返回空结果）', !threw && out.profiles.length === 0)
   disposeFn?.(); rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('== 5. extractWithLlm（自动沉淀蒸馏）传参：显式关推理（v0.9.25） ==')
+{
+  const optsSeen = []
+  const mockLlm2 = {
+    stream: async function* (opts) {
+      optsSeen.push(opts)
+      yield { type: 'text-delta', text: '{"content": "用户决定密钥走凭据文件 refs 段", "type": "decision", "layer": "sm", "keywords": ["credentials.yaml", "refs"]}' }
+    },
+  }
+  const r = await extractWithLlm(
+    { llm: mockLlm2 },
+    { refiner: { provider: 'mock', model: 'mock', reasoningEffort: 'off', maxTokens: 1200 } },
+    '[用户] 我要把密钥放凭据文件', '[助手] 好的',
+  )
+  check('蒸馏返回结构化记忆', r.content.includes('refs 段') && r.type === 'decision')
+  check('stream 调用带 reasoningEffort=off（防推理吞 maxTokens）', optsSeen.length === 1 && optsSeen[0].reasoningEffort === 'off')
+  check('stream 调用透传 provider/model/maxTokens', optsSeen[0].provider === 'mock' && optsSeen[0].model === 'mock' && optsSeen[0].maxTokens === 1200)
+
+  // effort 缺省时不传该参数（旧配置/老内核兼容）
+  const optsSeen2 = []
+  const mockLlm3 = { stream: async function* (opts) { optsSeen2.push(opts); yield { type: 'text-delta', text: '{"content": "x", "type": "note"}' } } }
+  await extractWithLlm({ llm: mockLlm3 }, { refiner: { provider: 'mock', model: 'mock', maxTokens: 800 } }, '[用户] a', '[助手] b')
+  check('reasoningEffort 缺省时不传参（向后兼容）', optsSeen2.length === 1 && optsSeen2[0].reasoningEffort === undefined)
 }
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败')
