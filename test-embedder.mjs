@@ -128,6 +128,44 @@ const mkStore = async (reranker, rerankCfg) => {
   store.close(); rmSync(dir, { recursive: true, force: true })
 }
 {
+  // P1-1 守护（v0.9.29）：minScore 门槛在 rerank 前按 RRF 分过滤——
+  // rerank 全给低分也不得用融合分 [0,1] 尺度绕过门槛（修复前噪音候选融合 0.69 仍漏网）
+  const mock = new MockReranker([0.01, 0.01, 0.01])
+  const { store, dir } = await mkStore(mock)
+  const hits = await store.search('rrf 主题', { scope: 'test', limit: 3, minScore: 0.05 })
+  check('minScore 按 RRF 分前置过滤（rerank 低分噪音被滤且不触发 rerank）', hits.length === 0 && mock.calls === 0)
+  const hits0 = await store.search('rrf 主题', { scope: 'test', limit: 3, minScore: 0 })
+  check('minScore=0 仍走 rerank 融合', hits0.length === 3 && mock.calls === 1)
+  store.close(); rmSync(dir, { recursive: true, force: true })
+}
+{
+  // P2-1 守护（v0.9.29）：rerank 失败熔断——失败后冷却期内不再调用（免每次 8s 挂起 + warn 刷屏）
+  const failing = { name: 'mock', calls: 0, async rerank() { this.calls++; throw new Error('api down') } }
+  const { store, dir } = await mkStore(failing)
+  const h1 = await store.search('rrf 主题', { scope: 'test', limit: 3, minScore: 0 })
+  check('rerank 失败降级且置冷却', h1.length === 3 && failing.calls === 1 && store.rerankCooldownUntil > Date.now())
+  const h2 = await store.search('rrf 主题', { scope: 'test', limit: 3, minScore: 0 })
+  check('冷却期内跳过 rerank（结果仍按 RRF 返回）', h2.length === 3 && failing.calls === 1)
+  store.close(); rmSync(dir, { recursive: true, force: true })
+}
+{
+  // rerank+boost 组合（v0.9.29）：boost 抬升的画像成为 rerank topK 候选首位
+  const seen = []
+  const spy = {
+    name: 'mock', calls: 0,
+    async rerank(query, docs) { this.calls++; seen.push([...docs]); return docs.map((_, i) => ({ index: i, relevance_score: 0.5 })) },
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-mem-test-'))
+  const store = new MemoryStore(join(dir, 't.db'), { embedder: new RuleEmbedder(256), reranker: spy, rerankCfg: { topK: 2, minCandidates: 2, rrfWeight: 0.7 } })
+  await store.add({ layer: 'sm', type: 'note', scope: 'test', content: '丹道修炼记录与图谱治理方法整理完成修复注入链路', keywords: ['丹道', '修炼', '记录', '图谱', '治理'] })
+  await store.add({ layer: 'sm', type: 'profile', scope: 'test', content: '用户修行丹道，近期课题是接纳情绪。', keywords: ['丹道'], aspect: 'habit' })
+  await store.search('丹道修炼记录', { scope: 'test', limit: 5, minScore: 0 })
+  check('无 boost：rerank 候选首位是长记忆', seen.length === 1 && seen[0][0].includes('图谱治理') && !seen[0][0].includes('接纳情绪'))
+  await store.search('丹道修炼记录', { scope: 'test', limit: 5, minScore: 0, boost: { profile: 3 } })
+  check('boost 后画像升至 rerank 候选首位', seen.length === 2 && seen[1][0].includes('接纳情绪'))
+  store.close(); rmSync(dir, { recursive: true, force: true })
+}
+{
   // 向量独有命中回归：2 字查询 FTS/关键词均不命中，只有向量路 → 结果必须非空（修复前丢失）
   const dir = mkdtempSync(join(tmpdir(), 'dsh-mem-test-'))
   const store = new MemoryStore(join(dir, 't.db'), { embedder: new RuleEmbedder(256), reranker: null })

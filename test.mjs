@@ -86,6 +86,26 @@ console.log('== 8. 凭据读取兼容两种格式（v0.9.25） ==')
   writeFileSync(flat, 'MEMORY_EMBEDDING_API_KEY: sk-flat\nEMPTY_KEY:\n', 'utf8')
   check('旧平铺格式仍兼容', readCredential('MEMORY_EMBEDDING_API_KEY', flat) === 'sk-flat')
   check('空值键返回 undefined', readCredential('EMPTY_KEY', flat) === undefined)
+
+  // P1-2 复现：records 段内的顶格注释行不得提前关闭段状态机（否则 secret 等字段泄漏进键匹配）
+  const commented = join(cdir, 'commented.yaml')
+  writeFileSync(commented, [
+    'version: 1',
+    'refs:',
+    '  MEMORY_EMBEDDING_API_KEY: sk-embed',
+    'records:',
+    '  # 顶格注释（评审发现的真实风险形态）',
+    '  client-connection/browser-session:',
+    '    kind: grant',
+    '    payload:',
+    '      secret: uBy-not-a-key',
+    '  # another comment',
+    '  other-record:',
+    '    secret: sk-other-secret',
+    '',
+  ].join('\n'), 'utf8')
+  check('records 内顶格注释行不关闭段（secret 仍不匹配）', readCredential('secret', commented) === undefined)
+  check('refs 段键读取不受注释影响', readCredential('MEMORY_EMBEDDING_API_KEY', commented) === 'sk-embed')
   rmSync(cdir, { recursive: true, force: true })
 }
 

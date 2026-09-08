@@ -2,6 +2,32 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.29 — 交叉审查修复批（v0.9.25~28）：minScore 量纲失配复发 + 凭据段状态机注释边界 + rerank 熔断（2026-09-08）
+
+子代理交叉审查（范围 4d445b0..834d93f）结论「可发布、无 P0」，P1×2 + P2×1 全部修复：
+
+### P1-1：rerank 激活后 minScore 量纲失配复发（v0.8.3 教训镜像）
+- **现象**：rerank 融合分尺度 [0,1]，而 `injectMinScore` 0.02 是 RRF 量纲（~0.05）——按融合分后置过滤时，rr=0.05 的噪音候选融合后 ~0.69，**把 minScore 调到 0.3 都滤不掉**，质量旋钮失灵。
+- **修复**：minScore 门槛**前移**到 rerank 之前，按（加权）RRF 分过滤一次；rerank 只负责精排不再承担召回过滤（门槛语义 = 召回证据量）。rerank topK 候选与融合（含 boost norm）全部基于过滤后的 `passGate`。
+- **守护**：test-embedder 新增——rerank 全给低分 + minScore 0.05 → 结果为空且不触发 rerank；minScore=0 仍走融合（2 项）。
+
+### P1-2：readCredential records 段状态机被顶格注释行提前关闭
+- **现象**：records 段内的顶格 `#` 注释行被当作「顶格新键」→ 段提前退出 → records 字段（secret 等）进入键匹配；键名与 records 字段名相同时（apiKeyEnv 可任意命名）会把浏览器会话凭据当 API key 发出。真实文件无注释未触发。
+- **修复**：注释行（顶格/缩进）直接跳过，不扰动段状态机、不参与匹配。
+- **守护**：test.mjs 新增 records 内顶格注释场景 2 项（secret 仍不泄漏 / refs 键读取正常）。
+
+### P2-1：rerank 失败无熔断
+- 失败后每次检索全量重试（最长 8s 超时挂起 + warn 刷屏）→ 置 `rerankCooldownUntil` **5 分钟冷却**，期间跳过 rerank 直接 RRF 顺序；警告注明熔断。
+- **守护**：test-embedder 新增熔断用例 2 项（失败置冷却 / 冷却期内不再调用且结果非空）。
+
+### P3 顺手
+- embedder.js rerank 判定补 `enabled !== false` 防御（存在即启用契约下显式禁用仍被尊重）。
+- store.js boost 加权补 NaN/非数防御（视为不加权）。
+
+### 验证
+- 13 套 264 项全绿（新增 8 项）；版本 0.9.28 → 0.9.29；副本 `lib/store.js`/`lib/util.js`/`lib/embedder.js` + package.json md5 同步。
+- ⚠️ 与 v0.9.27/0.9.28 一同重启生效。
+
 ## v0.9.28 — P0.1 画像召回加权：store.search 类型 boost，注入路径画像弱命中不再被碾压（2026-09-08）
 
 ROADMAP v0.10 P0.1（画像类记忆注入加权）落地——8/23 排查注入问题时定位的已知缺陷（mem-433c7806）：「查丹道记录」注入回图谱治理记录这类答非所问，根因是画像类 content 短/关键词少，RRF 里被含泛词的长记忆靠多路命中碾压。
