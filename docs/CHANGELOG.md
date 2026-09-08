@@ -2,6 +2,14 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.27 — LLM 跑题输出加固：严格 JSON 抽取共享化 + 强化重试一次（2026-09-08）
+
+v0.9.25/26 重启验证时实测画像蒸馏：**LLM 链路已通（reasoningEffort off 生效，模型有实质输出），但输出自由叙述而非 JSON**（`Unexpected token '）', ..."使用本地量化模型"...`）——关推理后部分模型不再自觉守 JSON 格式。
+
+- **修复**：`refiner.js` 新增共享 `llmStrictJson(ctx, cfg, prompt, system?)`——fence 剥除 + JSON.parse，**首次非 JSON 用强化系统提示重试一次**（「只输出合法 JSON 本体」+ 附上上次解析错误），两次失败才抛错（调用方各自降级：提取→规则路径，蒸馏→空结果）。`extractWithLlm` 与画像蒸馏（housekeeping.js）统一走此函数，消灭两份重复的 stream/fence/parse 代码。
+- **测试**：`test-profile.mjs` 新增第 6 节 4 项（跑题→重试成功两次调用 / 重试系统提示强化 / 附带解析错误上下文 / 两次失败抛错）；26 项全绿。
+- **验证**：全量 14 套无回归；副本 `lib/refiner.js` + `lib/tools/housekeeping.js` + package.json md5 同步。
+
 ## v0.9.26 — reranker 装配 bug：index.js 组装丢 enabled + embedder.js 判定错位 → reranker 从未创建（2026-09-08）
 
 v0.9.25 重启验证时发现：凭据修复后嵌入已恢复 remote 4096 维，但 init 仍 `reranker: null` 且无任何警告（enabled=true、key 可读、无降级 warning 三态并存）。

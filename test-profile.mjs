@@ -167,5 +167,39 @@ console.log('== 5. extractWithLlm（自动沉淀蒸馏）传参：显式关推�
   check('reasoningEffort 缺省时不传参（向后兼容）', optsSeen2.length === 1 && optsSeen2[0].reasoningEffort === undefined)
 }
 
+console.log('== 6. LLM 跑题输出 → 强化重试一次（v0.9.27） ==')
+{
+  const calls = []
+  const wanderLlm = {
+    stream: async function* (opts) {
+      calls.push(opts)
+      if (calls.length === 1) {
+        // 首次跑题：关推理后模型爱写叙述而非 JSON（真实线上形态）
+        yield { type: 'text-delta', text: '根据这些记录，用户似乎偏好本地量化模型（路径 E:\\models），此外还有……' }
+      } else {
+        yield { type: 'text-delta', text: '{"content": "用户偏好本地量化模型", "type": "preference", "layer": "sm", "keywords": ["量化模型"], "aspect": "preference"}' }
+      }
+    },
+  }
+  const r2 = await extractWithLlm(
+    { llm: wanderLlm },
+    { refiner: { provider: 'mock', model: 'mock', reasoningEffort: 'off', maxTokens: 1200 } },
+    '[用户] 聊聊模型选择', '[助手] 本地量化更稳',
+  )
+  check('跑题后重试成功（两次调用）', calls.length === 2 && r2.content.includes('量化模型'))
+  check('重试系统提示强化为 JSON 本体指令', calls[1].system.includes('只输出合法 JSON 本体'))
+  check('重试附带上次解析错误上下文', calls[1].messages[0].content[0].text.includes('不是合法 JSON'))
+}
+
+// 两次都失败仍抛错（调用方各自降级）
+{
+  const bad2Llm = { stream: async function* () { yield { type: 'text-delta', text: '还是叙述不是 JSON 啊啊啊' } } }
+  let threw = false
+  try {
+    await extractWithLlm({ llm: bad2Llm }, { refiner: { provider: 'mock', model: 'mock', reasoningEffort: 'off', maxTokens: 800 } }, '[用户] a', '[助手] b')
+  } catch { threw = true }
+  check('两次失败后抛错（上层走降级路径）', threw)
+}
+
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败')
 process.exit(fail > 0 ? 1 : 0)
