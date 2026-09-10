@@ -2,6 +2,16 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.10.3 — 设置面板去掉自带滚动条（消除双滚动条）（2026-09-10）
+
+用户反馈：「设置界面有两个侧边滚动条，只保留设置界面自己的」。
+
+- 根因：`client/settings.jsx` 主视图容器带了 `overflowY: 'auto' + maxHeight: 'calc(100vh - 24px)'`——设置对话框自身已是滚动容器，插件再套一层就出现**双滚动条**。
+- 修复：去掉插件容器的 `overflowY` 与 `maxHeight`，仅保留 `padding: 16` + `maxWidth: 680` + `boxSizing`（内容随外层设置面板统一滚动）。
+- 范围：只动设置面板；`logs.jsx`（日志面板）与 `graph.jsx`（全视口图谱面板的详情栏）的滚动是各自面板的合法滚动容器，保持不动。
+- bundle 重建（102129 B）→ 双副本 `client.js` md5 同步。
+- ⚠️ 前端刷新（或重启 EAC）后双滚动条消失。
+
 ## v0.10.2 — 设置面板全面适配：补齐落后于 schema 的配置项（2026-09-10）
 
 用户指出设置面板大多数选项落后于版本。全面盘点 `lib/config.js` schema vs `client/settings.jsx` 渲染项，补齐全部脱节点：

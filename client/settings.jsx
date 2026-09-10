@@ -475,7 +475,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
 
   if (status !== 'ready') {
     return (
-      <div style={{ padding: 16, maxWidth: 680, overflowY: 'auto', maxHeight: 'calc(100vh - 24px)', boxSizing: 'border-box' }}>
+      <div style={{ padding: 16, maxWidth: 680, boxSizing: 'border-box' }}>
         <h3 style={{ margin: '0 0 8px', fontSize: 16 }}>记忆</h3>
         <p style={{ color: '#888', fontSize: 13 }}>
           记忆插件设置{status === 'loading' ? '加载中…' : '不可用（host 未注册 memory 命名空间）'}
@@ -490,7 +490,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
   const blockTitle = { margin: '0 0 4px', fontWeight: 600, fontSize: 14 }
 
   return (
-    <div style={{ padding: 16, maxWidth: 680, overflowY: 'auto', maxHeight: 'calc(100vh - 24px)', boxSizing: 'border-box' }}>
+    <div style={{ padding: 16, maxWidth: 680, boxSizing: 'border-box' }}>
       <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>记忆</h3>
       <p style={{ margin: '0 0 8px', color: '#888', fontSize: 13 }}>
         dsh-memory 自动记忆插件——改动即时生效（live），写入 settings.yaml 的 memory 段。
