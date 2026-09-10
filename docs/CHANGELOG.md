@@ -2,6 +2,33 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.10.0 — P1 蒸馏双输出：abstraction（principle/event）+ theme 打标 + 注入加权（2026-09-10）
+
+ROADMAP v0.10 阶段一核心落地。一次手术切两个病灶：abstraction 与 theme 同属**蒸馏输出 schema 改造**，外加注入加权联动。
+
+### abstraction：抽象层级（principle/event）
+- `memories` 新增 `abstract` 列（幂等迁移，老库自动补列；白名单 principle|event，越界回落空串不落非法标记）。
+- **语义**：principle = 可复用的方法/原则/经验/看法（"怎么看待设计"）；event = 一次性具体事件/产出（"设计了什么"）。判断标准写进蒸馏 prompt：「能抽成通用原则的记 principle，纯事实记录是 event」。
+- 蒸馏 prompt 规则 7 + 输出 schema 增加 `abstract` 字段；`extractWithLlm` 白名单校验返回。
+- `store.add` 支持 abstract/theme 参数透传；`list/get`（SELECT *）自动带出新列。
+
+### theme：LLM 打标（替代补向量聚类标签）
+- 蒸馏 prompt 规则 8 + 输出 schema 增加 `theme` 字段：**简短稳定的名词标签**（2-8 字，如"四级备考"/"AI绘画"/"dsh-memory 开发"，不用句子/动词短语/标点）。
+- LLM 输出清洗：去空白/压空格/截 30 字；空串=未归类。**存量记忆不重打**（设计拍板：新机制仅应用新记忆）。
+
+### 注入加权联动（principle 优先、event 降权）
+- `store.search` boost 升级为**双维加权**：`权重 = typeBoost × abstractBoost`（原 P0.1 profile×3 保持）。
+- 注入路径（pre-step）传 `{ profile: 3, principle: 1.5, event: 0.7 }`——principle 弱命中被抬升能进注入门槛，event 弱相关被压低（强相关才注入），实现"我怎么看待设计"优先于"设计了什么"。
+- **预热同步**：非画像种子按 abstract 排序（principle 排前），预热时间认知同样原则优先。
+
+### 守护测试（test.mjs 新增 10/11 节，共 11 项）
+- 第 10 节 abstraction 存储层：越界回落空串 / 合法落库 / theme 落库 / 列存在 / 重开不重复加列 / principle×1.5 / event×0.7。
+- 第 11 节蒸馏双输出（mock LLM）：abstract=principle / theme / 越界回落 / 非字符串回落。
+
+### 验证
+- 13 套 **285 项全绿**（新增 11 项）；版本 0.9.33 → 0.10.0；副本 `lib/store.js`/`lib/refiner.js`/`lib/pipelines/inject.js`/`lib/pipelines/write.js` + package.json md5 同步。
+- ⚠️ 重启生效。生效后新写入记忆自动带 abstract/theme；注入日志可观察 principle 命中占比提升（P1 验证项）。
+
 ## v0.9.33 — 阶段 C：图工具记忆级升级（neighbors/path 走 memory_links）（2026-09-10）
 
 ROADMAP 阶段 C 落地：`memory_graph_neighbors` / `memory_graph_path` 从**实体节点级**升级为**记忆级**——沿 `memory_links` 活跃语义边扩散/寻路（底层 `memoryLinkNeighbors`/`memoryPath` 早已就绪，本次才接线）。

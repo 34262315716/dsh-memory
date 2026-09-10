@@ -1,4 +1,5 @@
 import { MemoryStore, tokenize, jaccard } from './lib/store.js'
+import { extractWithLlm } from './lib/refiner.js'
 import { readCredential } from './lib/util.js'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -134,6 +135,50 @@ console.log('== 9. 类型加权 boost：画像短记忆不再被泛词长记忆�
   const otherBoost = await s.search(q, { scope: 'test', limit: 5, minScore: 0, boost: { lesson: 3 } })
   check('不相关类型 boost 不改变排序', otherBoost[0]?.id === noteId)
   s.close(); rmSync(bdir, { recursive: true, force: true })
+}
+
+console.log('== 10. v0.10 abstraction：列迁移 + 白名单 + 注入加权（principle 优先/event 降权） ==')
+{
+  const adir = mkdtempSync(join(tmpdir(), 'dsh-abs-'))
+  const s = new MemoryStore(join(adir, 't.db'), {})
+  // 白名单：越界 abstract 回落空串，合法值落库
+  const badId = await s.add({ layer: 'sm', type: 'note', scope: 'test', content: '越界抽象测试内容', keywords: ['越界'], abstract: 'nonsense' })
+  const pId = await s.add({ layer: 'sm', type: 'lesson', scope: 'test', content: '原则甲：注入阈值必须与量纲对齐，否则旋钮失灵', keywords: ['阈值'], abstract: 'principle', theme: 'dsh-memory 开发' })
+  const eId = await s.add({ layer: 'sm', type: 'decision', scope: 'test', content: '事件乙：昨天修复了蓝牙驱动回退问题', keywords: ['蓝牙'], abstract: 'event', theme: '硬件排障' })
+  check('越界 abstract 回落空串', s.get(badId).abstract === '')
+  check('principle/event 合法落库', s.get(pId).abstract === 'principle' && s.get(eId).abstract === 'event')
+  check('theme 一并落库', s.get(pId).theme === 'dsh-memory 开发' && s.get(eId).theme === '硬件排障')
+  // 老库迁移幂等：无 abstract 列的库重开 → 自动补列且不重复
+  const raw = s.db.prepare('PRAGMA table_info(memories)').all()
+  check('abstract 列存在', raw.some((c) => c.name === 'abstract'))
+  s.close()
+  const s2 = new MemoryStore(join(adir, 't.db'), {})
+  const raw2 = s2.db.prepare('PRAGMA table_info(memories)').all()
+  check('重开不重复加列（列唯一）', raw2.filter((c) => c.name === 'abstract').length === 1)
+  // 注入加权：同分场景 principle 抬升、event 压低
+  const q = '阈值'
+  const boostAll = await s2.search(q, { scope: 'test', limit: 5, minScore: 0, boost: { principle: 1.5, event: 0.7 } })
+  const pB = boostAll.find((h) => h.id === pId)
+  const eB = boostAll.find((h) => h.id === eId)
+  const rawPS = (await s2.search(q, { scope: 'test', limit: 5, minScore: 0 })).find((h) => h.id === pId)?.score ?? 0
+  const rawES = (await s2.search(q, { scope: 'test', limit: 5, minScore: 0 })).find((h) => h.id === eId)?.score ?? 0
+  check('principle ×1.5（注入路径优先）', Math.abs((pB?.score ?? 0) - rawPS * 1.5) < 0.002)
+  check('event ×0.7（强相关才注入）', Math.abs((eB?.score ?? 0) - rawES * 0.7) < 0.002)
+  s2.close(); rmSync(adir, { recursive: true, force: true })
+}
+
+console.log('== 11. v0.10 蒸馏双输出：abstraction + theme（mock LLM） ==')
+{
+  const mockCtx = { llm: { stream: async function* () { yield { type: 'text-delta', text: '{"content": "注入阈值必须与量纲对齐", "type": "lesson", "layer": "sm", "keywords": ["阈值"], "aspect": "", "abstract": "principle", "theme": "dsh-memory 开发"}' } } } }
+  const cfg = { refiner: { provider: 'mock', model: 'mock', maxTokens: 800 } }
+  const out = await extractWithLlm(mockCtx, cfg, 'u', 'a')
+  check('蒸馏输出 abstract=principle', out.abstract === 'principle')
+  check('蒸馏输出 theme', out.theme === 'dsh-memory 开发')
+  // 越界 abstract / 非字符串 theme → 兜底
+  const badCtx = { llm: { stream: async function* () { yield { type: 'text-delta', text: '{"content": "x", "type": "note", "layer": "sm", "keywords": [], "aspect": "", "abstract": "weird", "theme": 42}' } } } }
+  const bad = await extractWithLlm(badCtx, cfg, 'u', 'a')
+  check('越界 abstract 回落空串', bad.abstract === '')
+  check('非字符串 theme 回落空串', bad.theme === '')
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
