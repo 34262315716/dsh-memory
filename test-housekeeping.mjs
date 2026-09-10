@@ -153,6 +153,67 @@ console.log('== 11. 运行日志（v0.9.5） ==')
   s.close(); rmSync(dir6, { recursive: true, force: true })
 }
 
+console.log('== 12. 降级态迁移防护（v0.9.31）：维度不一致不迁移、向量路暂停 ==')
+{
+  const dir7 = mkdtempSync(join(tmpdir(), 'dsh-memory-dg-'))
+  const db7 = join(dir7, 't.db')
+  const s1 = new MemoryStore(db7, { embedder: new RuleEmbedder(256) })
+  await s1.add({ layer: 'sm', scope: 'test', content: '降级甲：远程嵌入故障时的防护', keywords: ['降级'] })
+  await s1.add({ layer: 'sm', scope: 'test', content: '降级乙：绝不能清空向量表', keywords: ['降级'] })
+  s1.close()
+  // 降级态重开：表 256 维 vs embedder 4096 维 → 禁止 DROP，暂停向量路（FTS/关键词照常）
+  const s2 = new MemoryStore(db7, { embedder: new RuleEmbedder(4096), degraded: true })
+  const vecRows = s2.db.prepare('SELECT COUNT(*) AS c FROM memory_vectors').get().c
+  check('降级态：向量路暂停（vecEnabled=false）', s2.vecEnabled === false)
+  check('降级态：向量表未被 DROP（2 行数据保留）', vecRows === 2)
+  const r2 = await s2.reembedMissing()
+  check('降级态：reembedMissing 直接跳过（reason=vector disabled）', r2.reason === 'vector disabled' && r2.pending === 0)
+  s2.close()
+  // 非降级重开：正常路径不受影响，迁移照常
+  const s3 = new MemoryStore(db7, { embedder: new RuleEmbedder(4096) })
+  const vecRows3 = s3.db.prepare('SELECT COUNT(*) AS c FROM memory_vectors').get().c
+  check('正常态：迁移照常执行（表清空待重嵌入）', s3.vecEnabled === true && vecRows3 === 0)
+  s3.close(); rmSync(dir7, { recursive: true, force: true })
+}
+
+console.log('== 13. reembedMissing 批次重试（v0.9.31）：失败进重试队列，退避补完 ==')
+{
+  const dir8 = mkdtempSync(join(tmpdir(), 'dsh-memory-re-'))
+  const db8 = join(dir8, 't.db')
+  const s1 = new MemoryStore(db8, { embedder: new RuleEmbedder(256) })
+  await s1.add({ layer: 'sm', scope: 'test', content: '重试甲：网络抖动也该补完', keywords: ['重试'] })
+  await s1.add({ layer: 'sm', scope: 'test', content: '重试乙：批次失败进重试队列', keywords: ['重试'] })
+  await s1.add({ layer: 'sm', scope: 'test', content: '重试丙：重试轮后全部落库', keywords: ['重试'] })
+  s1.db.exec('DELETE FROM memory_vectors') // 模拟嵌入失败待补写
+  s1.close()
+  let calls = 0
+  const flaky = {
+    name: 'flaky', dim: 256,
+    async embed(texts) {
+      calls++
+      if (calls <= 1) throw new Error('network down (simulated)')
+      return new RuleEmbedder(256).embed(texts)
+    },
+  }
+  const s2 = new MemoryStore(db8, { embedder: flaky })
+  const r = await s2.reembedMissing(16, { retryRounds: 3, retryDelayMs: 5 })
+  check('首轮失败后重试补完（done=3 pending=0）', r.done === 3 && r.pending === 0)
+  check('确实发生失败重试（embed 调用 ≥2 次）', calls >= 2)
+  const missing = s2.db.prepare('SELECT COUNT(*) AS c FROM memories m LEFT JOIN memory_vectors v ON v.rowid=m.rowid WHERE v.rowid IS NULL').get().c
+  check('库内无缺失向量', missing === 0)
+  // 重试轮耗尽：放弃剩余，pending 保留
+  s2.db.exec('DELETE FROM memory_vectors')
+  let calls2 = 0
+  const flaky2 = {
+    name: 'flaky2', dim: 256,
+    async embed() { calls2++; throw new Error('always down') },
+  }
+  const s3 = new MemoryStore(db8, { embedder: flaky2 })
+  const r2 = await s3.reembedMissing(16, { retryRounds: 1, retryDelayMs: 5 })
+  check('重试轮耗尽后放弃（pending=3 保留）', r2.done === 0 && r2.pending === 3)
+  s2.close(); s3.close(); rmSync(dir8, { recursive: true, force: true })
+}
+
 store.close()
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
