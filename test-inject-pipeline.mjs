@@ -185,5 +185,19 @@ console.log('== 6. 日志仍记录注入事件（步号/查询/命中/分数/sco
   check('注入日志含 step=1 与 query/ids', logs.length === 1 && logs[0].step === 1 && logs[0].query.includes('日志验证问题') && logs[0].ids?.[0] === 'mem-x')
 }
 
+console.log('== 8. 时间戳注入（v0.9.32）：带时间但不破坏去抖 ==')
+{
+  const { call } = setup()
+  const fallback = async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] })
+  // 时间戳分离：注入文本带「当前时间」，去抖指纹不含时间
+  const d1 = await call('时间戳问题甲', fallback)
+  const memText = String(d1.messages.at(-1).content[0].text)
+  check('注入块头带当前时间戳（当前时间：YYYY-MM-DD HH:MM:SS 周X）', /当前时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 周[一二三四五六日]/.test(memText))
+  // 同一 hits 跨轮（间隔 ≥ stepInterval）：内容未变 → 即使时间在流逝也不重复注入
+  await call('时间戳问题乙', fallback)
+  const d3 = await call('时间戳问题丙', fallback)
+  check('时间戳不破坏去抖：同 hits 第三轮不重复注入', d3.messages.length === 2)
+}
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail ? 1 : 0)
