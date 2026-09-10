@@ -450,6 +450,10 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
 
       <div style={blockStyle}>
         <div style={blockTitle}>检索与注入</div>
+        <p style={{ color: '#888', fontSize: 12, margin: '0 0 10px 0' }}>
+          v0.10 注入加权：画像 ×3 · principle（方法/原则）×1.5 优先 · event（事件/产出）×0.7 降权（强相关才注入）；
+          蒸馏输出自动打 theme 名词标签（仅新记忆）。
+        </p>
         {NUMBER_FIELDS.map(([field, label, hint]) => (
           <Field key={field} label={label} hint={hint}>
             <input

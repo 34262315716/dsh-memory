@@ -298,6 +298,43 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.lineTo(e.b.x, e.b.y)
         ctx.stroke()
       }
+      // 主题圈（P2 v0.10）：同主题节点画半透明圆盘 + 主题名，仅成员 ≥3 的主题；
+      // 圆盘跟随节点实时质心/半径（力导向移动时圈住节点），hover/选中时与节点同透明度
+      const themeGroups = new Map()
+      for (const n of nodes) {
+        const t = n.theme
+        if (!t || t === "(未归类)") continue
+        if (!themeGroups.has(t)) themeGroups.set(t, [])
+        themeGroups.get(t).push(n)
+      }
+      for (const [theme, members] of themeGroups) {
+        if (members.length < 3) continue
+        const cxs = members.reduce((s, n) => s + n.x, 0) / members.length
+        const cys = members.reduce((s, n) => s + n.y, 0) / members.length
+        const radius = Math.max(...members.map((n) => Math.hypot(n.x - cxs, n.y - cys))) + 26
+        const base = pickColor(data.themes, theme, "note")
+        const m = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
+        const hue = m ? +m[1] : 200
+        const dimmed = focusIds && members.every((n) => !focusIds.has(n.id))
+        ctx.globalAlpha = (focusId ? (members.some((n) => n.id === focusId) ? 0.9 : 0.18) : 0.9)
+          * overallT * (dimmed ? 0.08 : 1)
+        // 半透明淡色圆盘（拍板样式：非虚线椭圆）
+        ctx.beginPath()
+        ctx.arc(cxs, cys, radius, 0, Math.PI * 2)
+        ctx.fillStyle = `hsla(${hue},70%,60%,0.10)`
+        ctx.fill()
+        ctx.strokeStyle = `hsla(${hue},74%,65%,0.35)`
+        ctx.lineWidth = 1.2 / transform.k
+        ctx.setLineDash([])
+        ctx.stroke()
+        // 主题名标签（圆盘顶部）
+        ctx.globalAlpha = (focusId ? (members.some((n) => n.id === focusId) ? 0.95 : 0.22) : 0.95)
+          * overallT * (dimmed ? 0.08 : 1)
+        ctx.font = `bold ${11 / transform.k}px sans-serif`
+        ctx.fillStyle = `hsla(${hue},70%,72%,0.9)`
+        ctx.textAlign = "center"
+        ctx.fillText(members.length + " · " + theme, cxs, cys - radius - 8 / transform.k)
+      }
       ctx.setLineDash([])
       // 边 hover 标签（v0.9.11）：鼠标悬停边时显示类型（+权重）
       const hovE = hoverEdgeRef.current
