@@ -41,7 +41,7 @@
 ## 3. P2 v0.10 阶段二：GUI 主题圈 + 图工具记忆级升级
 
 - **主题圈**：同主题节点画包围圈（凸包/虚线椭圆）+ 主题名，仅画节点数 ≥3 的主题；与主题着色协同；样式待拍板（虚线椭圆 vs 淡色圆盘）。
-- **图工具升级**（阶段 C）：`memory_graph_path` / `memory_graph_neighbors` 从实体节点升级为记忆级（`memoryPath` / `memoryLinkNeighbors` 已就绪，只差接线）；`memory_graph_node` 保留；守护测试工具清单同步。
+- **图工具升级**（阶段 C）✅ **已完成（v0.9.33）**：`memory_graph_path` / `memory_graph_neighbors` 从实体节点升级为记忆级（`memoryPath` / `memoryLinkNeighbors` 接线完成，沿 memory_links 活跃语义边；neighbors 附加边 type + snippet 摘要）；`memory_graph_node` 保留实体级；工具清单校验通过。
 
 ## 4. P3 维护小项（随时可捡）
 
