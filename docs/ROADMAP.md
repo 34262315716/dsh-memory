@@ -29,14 +29,14 @@
 
 ## 2. P1 v0.10 阶段一：refiner 蒸馏双输出（abstraction + theme）
 
-一次手术切两个病灶：abstraction 与 theme 同属**蒸馏输出 schema 改造**。
+> ✅ **已完成（v0.10.0，2026-09-10）**：蒸馏输出 schema 双扩展（abstract 白名单 principle|event + theme LLM 打标）+ 注入加权联动（search boost 双维 type×abstract：注入路径 profile×3 / principle×1.5 / event×0.7 + 预热 principle 排序优先）；store.add 透传 + 幂等迁移。守护测试 11 项，13 套 285 项全绿。
+> 剩余验证项（需运行观察）：蒸馏一致性抽查 ≥80%（新写入 20 条人工标注）＋注入实验 theme 匹配率——待重启生效后积累新记忆再抽查。
 
+原计划（已交付）：
 - **abstraction**：新列 `abstract: 'principle' | 'event'`（白名单校验）；principle=方法/原则/可复用经验，event=具体事件/产出。
-- **theme**：新列 `theme: string`（LLM 打简短稳定名词标签，如 "AI绘画" / "dsh-memory 开发"）；向量聚类降级兜底；**存量不动**。
+- **theme**：`theme` 列复用现有（v0.8 主题聚类列），LLM 打简短稳定名词标签（如 "AI绘画" / "dsh-memory 开发"）；**存量不动**（拍板：新机制仅新记忆）。
 - **注入加权联动**：pre-step/preheat 中 principle 优先注入、event 降权（强相关才注入）；theme 用于注入聚合与图谱着色。
-- **GUI**：设置面板 + 图谱图例同步新维度说明。
-- **验证**：新写入抽查 20 条标注一致性（人工 3 分类）；注入实验：query 命中记忆的 theme 与 query 主题匹配率；图谱主题着色"荒漠→全绿"。
-- **完成标准**：迁移脚本幂等 + 蒸馏一致性抽查 ≥80% + 全量测试 + CHANGELOG + 同步 + 提交。
+- **GUI**：设置面板 + 图谱图例同步新维度说明（**未做**，并入 P2 主题圈 GUI 批次）。
 
 ## 3. P2 v0.10 阶段二：GUI 主题圈 + 图工具记忆级升级
 
