@@ -2,6 +2,28 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.10.4 — 存量主题治理（LLM 簇级重命名）+ 嵌入切换风险提示（2026-09-10）
+
+用户验收时发现：存量 110 条 theme 是**旧向量聚类的残留**（`theme_clusters` 表已空、577 条记忆全未归簇，theme 没清）——巨型糊团 `eac/dsh×100` + 碎片词标签。按两个方向整改：
+
+### 1. memory_theme_relabel 工具（存量主题治理）
+- **方案**：先全量重聚类（复用 `themeMemories(incremental:false)`，清簇重归 + 覆写残留 theme），再**簇级 LLM 重命名**——1 簇 1 次调用（比逐条重打便宜几十倍）。
+- `store.themeClusterList(minMembers)`：读簇与成员 id；`store.retagTheme(clusterId, label)`：写回簇标签 + 全成员 theme（不动 cluster_id，增量聚类不会覆写）。
+- 参数：`dryRun`（默认 true 只报告建议）/ `limit`（默认 20 簇控成本）/ `minMembers`（默认 2，单成员簇标签本就为空）/ `recluster`（true=先全量重聚类）。
+- 提示词：给最多 8 条成员内容样本 → LLM 打 2-8 字名词标签（与蒸馏 theme 同一风格）；清洗（去空白/压空格/截 30）；失败保留旧标签不崩。
+- **成本**：重聚类 ≈19 次嵌入调用（577 条，真嵌入 4096 维）+ 重命名 = 簇数 × 1 次 LLM 调用（用户控制 limit）。
+
+### 2. GUI 嵌入切换风险提示（P3-3 落地）
+- 设置面板嵌入区块：检测 provider/model draft 变化 → 显示风险横幅（切换不即时生效、重启时可能**清空向量表全量重嵌入**、远程失败进降级态）+ **确认勾选门禁**（勾选前保存按钮禁用）；保存后提示"需重启 DSH 生效"；reset 清除确认态。
+- 依据：`applies: 'live'` 但 store 只在 apply 创建一次——嵌入改动确实要重启才生效，重启时才触发迁移。
+
+### 守护测试（test.mjs 第 12 节，10 项）
+- 重聚类产生多成员簇 / dryRun 返回建议且不写库 / apply 更新簇标签与全成员 theme / LLM 失败保留旧标签。
+
+### 验证
+- 13 套 **295 项全绿**（新增 10 项）；版本 0.10.3 → 0.10.4；副本 `lib/store.js`/`lib/tools/housekeeping.js`/`lib/client.js` + package.json md5 同步。
+- ⚠️ 重启生效。生效后模型可调 `memory_theme_relabel`（先 dryRun 看建议 → 再 apply）；GUI 切换嵌入模型会看到风险横幅。
+
 ## v0.10.3 — 设置面板去掉自带滚动条（消除双滚动条）（2026-09-10）
 
 用户反馈：「设置界面有两个侧边滚动条，只保留设置界面自己的」。

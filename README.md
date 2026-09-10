@@ -48,6 +48,7 @@ memory_graph_node        节点详情 + 邻域
 memory_versions          世界线版本链（回滚前查看）
 memory_rollback          回滚到历史版本（时间旅行）
 memory_housekeeping      管家巡检（去重扫描 + 老化报告；dryRun=false 自动合并近重复）
+memory_theme_relabel     存量主题治理（簇级 LLM 重命名；dryRun 只报告 / recluster 先全量重聚类）
 memory_events            列出记忆事件（时间+因果聚簇；detect=true 强制重检测）
 memory_profile_distill   画像蒸馏（偏好/决策聚合为用户画像；需 refiner 启用）
 memory_logs               查看运行日志（写入/注入/检索/巡检/蒸馏/错误全透明）

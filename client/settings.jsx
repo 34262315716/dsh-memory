@@ -272,6 +272,11 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
   const features = value.features ?? {}
   const refiner = value.refiner ?? {}
   const embedding = value.embedding ?? {}
+  // 嵌入模型切换风险（v0.10.4）：改动不 live 生效，重启 DSH 时触发向量库维度迁移
+  // （DROP 向量表 + 全量重嵌入；远程嵌入失败则进入降级态暂停向量路）。确认勾选才能保存。
+  const embChanging = (drafts['embedding.provider'] !== undefined && drafts['embedding.provider'] !== (embedding.provider ?? 'remote'))
+    || (drafts['embedding.model'] !== undefined && drafts['embedding.model'] !== (embedding.model ?? ''))
+  const [embedAck, setEmbedAck] = useState(false)
   const reranker = value.reranker ?? {}
   const graphView = value.graphView ?? {}
   const housekeeping = value.housekeeping ?? {}
@@ -460,7 +465,8 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         await scope.set('logging', next)
       }
       setDrafts({})
-      setMsg('✅ 已保存，改动即时生效')
+      setEmbedAck(false)
+      setMsg('✅ 已保存，改动即时生效' + (embChanging ? '；嵌入模型改动需重启 DSH 生效' : ''))
     } catch (err) {
       setMsg(`❌ 保存失败: ${err.message}`)
     } finally {
@@ -470,6 +476,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
 
   const reset = () => {
     setDrafts({})
+    setEmbedAck(false)
     setMsg('')
   }
 
@@ -726,6 +733,23 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           hint="硅基流动控制台创建密钥；写入 ~/.dsh/.credentials.yaml（私有文件），不进设置/记忆库、界面不回显。"
         />
 
+        {embChanging && (
+          <div style={{ marginTop: 10, padding: 10, border: '1px solid #b76e2b', borderRadius: 8, background: '#2a2118' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#e8a24a' }}>⚠ 切换嵌入模型会触发向量库重建</div>
+            <p style={{ color: '#c9a27a', fontSize: 12, margin: '6px 0' }}>
+              嵌入供应商/模型的改动<b>不会立即生效</b>——DSH 下次启动时才按新配置重建：
+              若向量维度变化，会<b>清空向量表并全量重嵌入</b>（期间语义检索暂弱，FTS/关键词照常）；
+              若远程嵌入初始化失败，会进入<b>降级态暂停向量路</b>（v0.9.31 保护，不破坏现有向量）。
+            </p>
+            <CheckboxRow
+              label="我已了解：切换嵌入模型需重启 DSH 并可能全量重建向量库"
+              hint="勾选后才能保存本页改动"
+              checked={embedAck}
+              onChange={(e) => setEmbedAck(e.target.checked)}
+            />
+          </div>
+        )}
+
         <div style={{ fontWeight: 500, fontSize: 13, marginTop: 14 }}>重排（reranker）</div>
         <CheckboxRow
           label="启用重排"
@@ -856,7 +880,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       </div>
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-        <button onClick={save} disabled={!dirty || invalid || saving || !writable}
+        <button onClick={save} disabled={!dirty || invalid || saving || !writable || (embChanging && !embedAck)}
           style={{ padding: '4px 16px', borderRadius: 6, border: '1px solid #555', background: '#2a2a2a', color: '#eee', cursor: dirty ? 'pointer' : 'default' }}>
           {saving ? '保存中…' : '保存'}
         </button>

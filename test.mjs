@@ -1,5 +1,7 @@
 import { MemoryStore, tokenize, jaccard } from './lib/store.js'
 import { extractWithLlm } from './lib/refiner.js'
+import { registerHousekeepingTools } from './lib/tools/housekeeping.js'
+import { RuleEmbedder } from './lib/embedder.js'
 import { readCredential } from './lib/util.js'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -179,6 +181,61 @@ console.log('== 11. v0.10 蒸馏双输出：abstraction + theme（mock LLM） ==
   const bad = await extractWithLlm(badCtx, cfg, 'u', 'a')
   check('越界 abstract 回落空串', bad.abstract === '')
   check('非字符串 theme 回落空串', bad.theme === '')
+}
+
+console.log('== 12. 存量主题治理 memory_theme_relabel（v0.10.4） ==')
+{
+  const rdir = mkdtempSync(join(tmpdir(), 'dsh-relabel-'))
+  const s = new MemoryStore(join(rdir, 't.db'), { embedder: new RuleEmbedder(256) })
+  // 造 4 条同主题记忆（共享关键词 → 向量聚类应归为一簇）
+  const ids = []
+  for (let i = 0; i < 4; i++) {
+    ids.push(await s.add({ layer: 'sm', type: 'note', scope: 'test', content: `主题治理测试记忆 ${i}：关于记忆插件的向量检索与主题聚类专题讨论`, keywords: ['记忆插件', '向量检索'] }))
+  }
+  // 全量重聚类 → 生成碎片标签簇
+  await s.themeMemories(0.78, { incremental: false })
+  const before = s.themeClusterList(2)
+  check('重聚类产生 ≥1 个多成员簇', before.length >= 1)
+  const clusterId = before[0].id
+  const oldLabel = before[0].label
+  check('旧标签来自向量聚类（碎片词拼接）', typeof oldLabel === 'string' && oldLabel.length > 0)
+
+  // mock LLM：返回规范名词标签
+  let llmCalls = 0
+  const registered = {}
+  const mockCtx = {
+    llm: { stream: async function* () { llmCalls++; yield { type: 'text-delta', text: '{"theme": "记忆主题治理"}' } } },
+    tools: { register: (t) => { registered[t.name] = t; return true } },
+  }
+  const getCfg = () => ({ refiner: { provider: 'mock', model: 'mock', maxTokens: 400 }, logging: { enabled: false } })
+  registerHousekeepingTools(mockCtx, s, getCfg)
+  const tool = registered.memory_theme_relabel
+  check('memory_theme_relabel 工具已注册', typeof tool?.execute === 'function')
+
+  // dryRun：只报告不写库
+  const dry = await tool.execute({ dryRun: true, limit: 20, minMembers: 2 })
+  check('dryRun 返回建议标签', dry.clusters.some((c) => c.id === clusterId && c.newLabel === '记忆主题治理'))
+  check('dryRun 未写库（memory theme 未变）', s.get(ids[0]).theme === oldLabel)
+  check('dryRun 不动簇标签', s.themeClusterList(2)[0].label === oldLabel)
+
+  // apply：写回簇标签 + 成员 theme
+  const ok = await tool.execute({ dryRun: false, limit: 20, minMembers: 2 })
+  check('apply 更新 N 条记忆', ok.updated >= 4)
+  check('簇标签已重命名', s.themeClusterList(2).some((c) => c.id === clusterId && c.label === '记忆主题治理'))
+  check('成员 theme 已重命名', ids.every((id) => s.get(id).theme === '记忆主题治理'))
+
+  // LLM 失败：保留旧标签不崩
+  const registered2 = {}
+  const failCtx = { llm: { stream: async function* () { throw new Error('llm down') } }, tools: { register: (t) => { registered2[t.name] = t; return true } } }
+  const store2 = new MemoryStore(join(rdir, 't2.db'), { embedder: new RuleEmbedder(256) })
+  const ids2 = []
+  for (let i = 0; i < 3; i++) ids2.push(await store2.add({ layer: 'sm', type: 'note', scope: 'test', content: `失败场景记忆 ${i}`, keywords: ['失败场景'] }))
+  await store2.themeMemories(0.78, { incremental: false })
+  const c2 = store2.themeClusterList(2)[0]
+  registerHousekeepingTools(failCtx, store2, getCfg)
+  const dry2 = await registered2.memory_theme_relabel.execute({ dryRun: false, limit: 20, minMembers: 2 })
+  check('LLM 失败的簇带 error 且不写库', dry2.clusters.every((c) => c.error) && store2.get(ids2[0]).theme === c2.label)
+  s.close(); store2.close(); rmSync(rdir, { recursive: true, force: true })
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
