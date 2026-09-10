@@ -12,8 +12,9 @@ const safeSnapshot = (scope) => {
 /** 表单字段定义：数值字段（顶层）。 */
 const NUMBER_FIELDS = [
   ['injectMaxTokens', '注入最大 token/次', '每次自动注入的 token 预算'],
-  ['stepInterval', '步距节流', '每 N 步做一次全量检索'],
-  ['injectMinScore', '注入最低相关分', 'RRF 融合量纲（三路全中 ~0.049）；默认 0.015 ≈ 至少一路排前 13，低于该分数的记忆不注入'],
+  ['stepInterval', '步距节流', '每 N 步做一次全量检索（默认 10）'],
+  ['injectMinScore', '注入最低相关分', 'RRF 融合量纲（三路全中 ~0.049、单路 rank1 ~0.016）；默认 0.02 ≈ 至少一路排前 10，低于该分数的记忆不注入'],
+  ['maxRecentPerAgent', '防循环窗口（很最近注入）', '每个 agent 最近注入的记忆 id 窗口，窗口内不再重复注入（1~50，默认 6）'],
   ['maxVersionsPerMemory', '版本上限（世界线长度）', '每条记忆最多保留的版本数'],
 ]
 
@@ -34,6 +35,8 @@ const REFINER_FIELDS = [
   ['provider', '供应商 Provider', '已配置的 provider 路由（下拉预设；自建端点可选自定义）'],
   ['model', '模型', '选定供应商的模型目录（下拉预设；可自定义 id）'],
   ['apiKeyEnv', '独立密钥槽引用', '仅当选中供应商未声明 apiKeyEnv 时生效（自建供应商场景），默认 MEMORY_REFINER_API_KEY'],
+  ['reasoningEffort', '推理档位', "off=关闭思维链（防 maxTokens 被推理吞掉，v0.9.25 教训）；透传给支持 reasoningEffort 的适配器"],
+  ['maxTokens', '输出上限（token）', '蒸馏 JSON 长度预算（100~4000，默认 1200）'],
 ]
 
 /** 嵌入模型字段（embedding 子对象，对应 settings schema）。 */
@@ -72,7 +75,17 @@ const HOUSEKEEPING_FIELDS = [
   ['agingDays', '老化报告天数', '闲置超 N 天的低价值记忆进报告（7~365，默认 30）'],
 ]
 
-const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays'])
+/** 事件分类字段（events 子对象，v0.9.0）。 */
+const EVENTS_FIELDS = [
+  ['gapHours', '归并窗口（小时）', '时间线扫描：相邻间隔 ≤ N 小时且同主题/共享实体的记忆归为同一事件（0.5~48，默认 2）'],
+]
+
+/** 运行日志字段（logging 子对象，v0.9.5）。 */
+const LOGGING_FIELDS = [
+  ['maxRows', '日志保留条数', '惰性裁剪上限（100~10000，默认 2000）'],
+]
+
+const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays', 'gapHours', 'maxRows', 'maxTokens'])
 
 function Field({ label, hint, children }) {
   return (
@@ -262,6 +275,8 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
   const reranker = value.reranker ?? {}
   const graphView = value.graphView ?? {}
   const housekeeping = value.housekeeping ?? {}
+  const events = value.events ?? {}
+  const logging = value.logging ?? {}
   const writable = snap.writable ?? false
   const status = snap.status
 
@@ -328,9 +343,11 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
   const setText = (group, field, text) => setDrafts((d) => ({ ...d, [`${group}.${field}`]: text }))
 
   const dirty = Object.keys(drafts).length > 0
-  // 数值字段（顶层全部 + 子对象中 NUMERIC_SUB 声明项）填了非数字 → 禁止保存
+  // 数值字段（顶层数值声明 + 子对象中 NUMERIC_SUB 声明项）填了非数字 → 禁止保存；
+  // 顶层文本字段（dbFile/scope 等，TEXT_TOP 声明）不参与数值校验
+  const TEXT_TOP = new Set(['dbFile', 'scope'])
   const invalid = Object.entries(drafts).some(([k, v]) => {
-    if (v === '') return false
+    if (v === '' || TEXT_TOP.has(k)) return false
     const field = k.includes('.') ? k.split('.')[1] : k
     const isNumeric = !k.includes('.') || NUMERIC_SUB.has(field)
     return isNumeric && Number.isNaN(Number(v))
@@ -346,6 +363,15 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         if (raw === undefined) continue
         if (raw === '') await scope.unset(field)
         else await scope.set(field, Number(raw))
+      }
+      if (drafts['enabled'] !== undefined) await scope.set('enabled', drafts['enabled'])
+      if (drafts['dbFile'] !== undefined) {
+        if (drafts['dbFile'] === '') await scope.unset('dbFile')
+        else await scope.set('dbFile', drafts['dbFile'])
+      }
+      if (drafts['scope'] !== undefined) {
+        if (drafts['scope'] === '') await scope.unset('scope')
+        else await scope.set('scope', drafts['scope'])
       }
       // features 整体
       const featKeys = FEATURE_FIELDS.map(([f]) => f)
@@ -364,7 +390,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         for (const [f] of REFINER_FIELDS) {
           const v = drafts[`refiner.${f}`]
           if (v !== undefined) {
-            next[f] = f === 'enabled' ? v : String(v)
+            next[f] = f === 'enabled' ? v : NUMERIC_SUB.has(f) ? Number(v) : String(v)
           }
         }
         await scope.set('refiner', next)
@@ -411,6 +437,28 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         if (drafts['housekeeping.enabled'] !== undefined) next.enabled = drafts['housekeeping.enabled']
         await scope.set('housekeeping', next)
       }
+      {/* events 整体（v0.9.0 事件分类） */}
+      const evKeys = EVENTS_FIELDS.map(([f]) => f)
+      if (evKeys.some((f) => drafts[`events.${f}`] !== undefined) || drafts['events.enabled'] !== undefined) {
+        const next = { ...events }
+        for (const [f] of EVENTS_FIELDS) {
+          const v = drafts[`events.${f}`]
+          if (v !== undefined) next[f] = Number(v)
+        }
+        if (drafts['events.enabled'] !== undefined) next.enabled = drafts['events.enabled']
+        await scope.set('events', next)
+      }
+      {/* logging 整体（v0.9.5 运行日志） */}
+      const lgKeys = LOGGING_FIELDS.map(([f]) => f)
+      if (lgKeys.some((f) => drafts[`logging.${f}`] !== undefined) || drafts['logging.enabled'] !== undefined) {
+        const next = { ...logging }
+        for (const [f] of LOGGING_FIELDS) {
+          const v = drafts[`logging.${f}`]
+          if (v !== undefined) next[f] = Number(v)
+        }
+        if (drafts['logging.enabled'] !== undefined) next.enabled = drafts['logging.enabled']
+        await scope.set('logging', next)
+      }
       setDrafts({})
       setMsg('✅ 已保存，改动即时生效')
     } catch (err) {
@@ -447,6 +495,34 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       <p style={{ margin: '0 0 8px', color: '#888', fontSize: 13 }}>
         dsh-memory 自动记忆插件——改动即时生效（live），写入 settings.yaml 的 memory 段。
       </p>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>基础配置</div>
+        <CheckboxRow
+          label="启用插件"
+          hint="总开关；关闭后插件不初始化（改动需重启 DSH 生效，不是 live）"
+          checked={drafts['enabled'] ?? Boolean(value.enabled ?? true)}
+          onChange={(e) => setDrafts((d) => ({ ...d, enabled: e.target.checked }))}
+        />
+        <Field label="数据库文件（dbFile）" hint="留空默认 ~/.dsh/memory.db；改动需重启生效">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['dbFile'] ?? value.dbFile ?? ''}
+            disabled={!writable}
+            onChange={(e) => setDrafts((d) => ({ ...d, dbFile: e.target.value }))}
+          />
+        </Field>
+        <Field label="默认作用域（scope）" hint="跨会话默认收窄到当前工作目录名；留空自动按工作区（v0.9.4 分层）">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['scope'] ?? value.scope ?? ''}
+            disabled={!writable}
+            onChange={(e) => setDrafts((d) => ({ ...d, scope: e.target.value }))}
+          />
+        </Field>
+      </div>
 
       <div style={blockStyle}>
         <div style={blockTitle}>检索与注入</div>
@@ -552,6 +628,24 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           value={drafts['refiner.apiKeyEnv'] ?? refiner.apiKeyEnv ?? 'MEMORY_REFINER_API_KEY'}
           disabled={!writable}
           onChange={(e) => setText('refiner', 'apiKeyEnv', e.target.value)}
+        />
+      </Field>
+      <Field label="推理档位（reasoningEffort）" hint="off=关思维链直出 JSON（默认；推理档会把 maxTokens 吃光导致蒸馏 100% 失败——v0.9.25 教训）；仅适配器声明 supportsReasoningEffort 时透传">
+        <input
+          style={inputStyle}
+          type="text"
+          value={drafts['refiner.reasoningEffort'] ?? refiner.reasoningEffort ?? 'off'}
+          disabled={!writable}
+          onChange={(e) => setText('refiner', 'reasoningEffort', e.target.value)}
+        />
+      </Field>
+      <Field label="输出上限（maxTokens）" hint="蒸馏 JSON 长度预算（100~4000，默认 1200）；关闭推理后仍偏紧可上调">
+        <input
+          style={inputStyle}
+          type="text"
+          value={drafts['refiner.maxTokens'] ?? String(refiner.maxTokens ?? 1200)}
+          disabled={!writable}
+          onChange={(e) => setText('refiner', 'maxTokens', e.target.value)}
         />
       </Field>
 
@@ -708,6 +802,54 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
               value={drafts[`housekeeping.${field}`] ?? housekeeping[field] ?? ''}
               disabled={!writable}
               onChange={(e) => setText('housekeeping', field, e.target.value)}
+            />
+          </Field>
+        ))}
+      </div>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>事件分类（v0.9.0）</div>
+        <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
+          时间连续 + 因果相关的记忆聚簇——"这段记忆属于哪件事"（区别于 theme 的"在讲什么"）；纯 rule 时间线扫描，管家/启动自动维护。
+        </p>
+        <CheckboxRow
+          label="启用事件分类"
+          hint="按时间线与主题/实体相似度把记忆归为事件（图谱可筛选）"
+          checked={bool('events', 'enabled', events)}
+          onChange={(e) => setBool('events', 'enabled', e.target.checked)}
+        />
+        {EVENTS_FIELDS.map(([field, label, hint]) => (
+          <Field key={field} label={label} hint={hint}>
+            <input
+              style={inputStyle}
+              type="text"
+              value={drafts[`events.${field}`] ?? String(events[field] ?? 2)}
+              disabled={!writable}
+              onChange={(e) => setText('events', field, e.target.value)}
+            />
+          </Field>
+        ))}
+      </div>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>运行日志（v0.9.5）</div>
+        <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
+          背后运行了什么完全透明可见：写入/注入/检索/巡检/蒸馏/错误全链路埋点；GUI「记忆日志」面板 + memory_logs 工具。
+        </p>
+        <CheckboxRow
+          label="启用运行日志"
+          hint="记录插件内部事件（诊断与审计用）"
+          checked={bool('logging', 'enabled', logging)}
+          onChange={(e) => setBool('logging', 'enabled', e.target.checked)}
+        />
+        {LOGGING_FIELDS.map(([field, label, hint]) => (
+          <Field key={field} label={label} hint={hint}>
+            <input
+              style={inputStyle}
+              type="text"
+              value={drafts[`logging.${field}`] ?? String(logging[field] ?? 2000)}
+              disabled={!writable}
+              onChange={(e) => setText('logging', field, e.target.value)}
             />
           </Field>
         ))}

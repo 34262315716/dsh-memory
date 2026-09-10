@@ -2,6 +2,21 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.10.2 — 设置面板全面适配：补齐落后于 schema 的配置项（2026-09-10）
+
+用户指出设置面板大多数选项落后于版本。全面盘点 `lib/config.js` schema vs `client/settings.jsx` 渲染项，补齐全部脱节点：
+
+- **基础配置（新块）**：插件总开关 `enabled`、`dbFile`、默认 `scope`（此前顶层三项完全不可配置）。
+- **检索与注入**：补 `maxRecentPerAgent`（防循环窗口）；修正 `injectMinScore` 提示（旧文案写默认 0.015，实际 v0.9.4 起为 0.02）。
+- **refiner**：补 `reasoningEffort`（推理档位，off=关思维链，防 v0.9.25 教训重演：推理吃光 maxTokens 致蒸馏 100% 失败）、`maxTokens`（输出预算）。
+- **事件分类（新块）**：`events.enabled` + `gapHours` 归并窗口（v0.9.0 的功能此前无 GUI）。
+- **运行日志（新块）**：`logging.enabled` + `maxRows` 保留条数（v0.9.5 的功能此前无 GUI）。
+- save 管线：新增 events/logging 整体保存、顶层 enabled/dbFile/scope 保存（空串 → unset）；`NUMERIC_SUB` 补 maxTokens/gapHours/maxRows；invalid 校验排除顶层文本字段；refiner maxTokens 按数字保存。
+
+### 验证
+- bundle 重建（102233 B）；双副本 `client.js` md5 一致；test.mjs / test-crash-safety 回归全绿。
+- ⚠️ 前端刷新（或重启 EAC）后进「设置 → 记忆」可见全部区块与字段。
+
 ## v0.10.1 — P2 GUI 主题圈 + 设置面板新维度说明（2026-09-10）
 
 ROADMAP P2 主题圈落地（图工具记忆级升级已在 v0.9.33 完成）：
