@@ -38,9 +38,9 @@ memory_merge             合并两条相似记忆
 memory_purge             清空作用域/全部
 memory_list              浏览
 memory_stats             统计（含向量/图谱状态）
-memory_graph_neighbors   图谱邻域（k-hop 扩散）
+memory_graph_neighbors   记忆图谱邻域（记忆级 k-hop：相邻记忆 id+边类型+跳数）
 memory_graph_communities 社区检测/查看
-memory_graph_path        图谱最短路径（节点序列+边类型链）
+memory_graph_path        记忆最短路径（记忆 id 序列+边类型链）
 memory_graph_link        手动连边（8 型语义关系）
 memory_graph_unlink      断边（历史保留）
 memory_graph_node        节点详情 + 邻域

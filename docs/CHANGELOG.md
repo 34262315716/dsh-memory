@@ -2,6 +2,20 @@
 
 > 从"一条注入插件的想法"到"带图谱与向量检索的长期记忆子系统"的完整轨迹。技术方案演进见 [`memory-plugin-proposal.md`](memory-plugin-proposal.md)。
 
+## v0.9.33 — 阶段 C：图工具记忆级升级（neighbors/path 走 memory_links）（2026-09-10）
+
+ROADMAP 阶段 C 落地：`memory_graph_neighbors` / `memory_graph_path` 从**实体节点级**升级为**记忆级**——沿 `memory_links` 活跃语义边扩散/寻路（底层 `memoryLinkNeighbors`/`memoryPath` 早已就绪，本次才接线）。
+
+### 变更
+- **`memory_graph_neighbors`**：不再返回实体节点（nodes/kind/label），改返回相邻**记忆**（`id` + 边 `type` + `depth` 跳数 + `snippet` 内容摘要 50 字）——模型直接看到"这条记忆和谁有关、什么关系"，不用再绕道实体层。
+- **`memory_graph_path`**：`store.path`（实体边）→ `store.memoryPath`（记忆边 BFS），输入输出全为记忆 id，边类型链语义不变（causes/before/supports…）。
+- 兼容性：参数名（`fromId`/`toId`/`memoryId`/`hops`/`maxLen`）不变，仅语义从节点改为记忆；`memory_graph_node` 保留实体级（查节点详情仍有用）。
+
+### 验证
+- 冒烟实测：`a -causes- c -before- b` 链 → neighbors(a) 返回 `[c@1跳 causes, b@2跳 before]`；path(a,b) 返回 `[a,c,b] + [causes,before]`。
+- 13 套 **274 项全绿**（工具清单校验覆盖注册无缺无多）；版本 0.9.32 → 0.9.33；副本 `lib/tools/graph.js` + package.json md5 同步。
+- ⚠️ 重启生效。模型侧可直接问「mem-A 和哪些记忆关联」/「这两条记忆之间怎么连起来的」。
+
 ## v0.9.32 — 注入块时间戳：长会话时间认知不断锚（2026-09-10）
 
 用户提需求「让 DSH 实时感知当前时间，集成到记忆插件」。盘点现状发现两件事：① `system_now` 工具（v0.8.5 注册）已存在——本地+ISO+Unix+星期+时区，模型可随时主动查询；② 会话预热（session-start）已带时间锚点。**真正的断档**：pre-step 检索注入块不带时间，且 v0.8.5 曾刻意不加（时间每步变化会破坏 KV 缓存复用与 hash 去抖）。
