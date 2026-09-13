@@ -206,7 +206,8 @@ node test-edge-types.mjs   # 边类型专项（9 项：mentions 共现快照/bef
 node test-keyword-filter.mjs # 关键词稀有化专项（8 项：pickRareEntities 剔泛词/稀缺升序/graphLink 硬过滤/单实体与停用词不建）
 node test-profile.mjs   # 画像分类专项（16 项：scopeOf 三态/预热画像/aspect 读写/蒸馏 mock LLM；需副本环境）
 node test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
-node test-graph-geometry.mjs # 主题区域几何 + 布局缓存 + 布局策略专项（76 项：凸包贴合/外扩精度/最小外接圆最优性与确定性/就地聚簇/密度核心/平移跟随；纯函数，无需副本环境）
+node test-link-suggest.mjs    # 语义连边判定专项（18 项：四道闸门/去重/上限/层级/确定性；纯函数）
+node test-graph-geometry.mjs # 主题区域几何 + 布局缓存 + 布局策略专项（66 项：凸包贴合/外扩精度/最小外接圆最优性与确定性/就地聚簇/密度核心/平移跟随；纯函数，无需副本环境）
 node test-inject-pipeline.mjs # 注入管线专项（29 项：decision 合并注入/步距必检/10 步长任务节奏/hash 去抖/自主轮次兜底/守卫/reject 透传）
                           # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行
 node test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
