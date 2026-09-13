@@ -62,8 +62,8 @@ export function layoutSignature(data) {
   return `${h.toString(16)}-${ids.length}-${edges}`
 }
 
-/** 缓存键带版本（v2：环形假平衡；v3：加了碰撞规避前的布局可能有重合 → 一并作废）。 */
-const KEY = 'dsh-memory:graph-layout:v3'
+/** 缓存键带版本（v2：环形假平衡；v3：有重合；v4：旧力模型的"团状贴紧"布局 → 一并作废）。 */
+const KEY = 'dsh-memory:graph-layout:v4'
 
 /** 读缓存（浏览器环境；任何异常 → null）。 */
 export function loadLayout() {

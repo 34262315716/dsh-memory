@@ -233,8 +233,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     /** 节点世界半径（v0.10.11：**不随缩放变化**的布局常量）。原式带了 /√k：
      *  半径随缩放漂移 → "节点不重合"无法成为布局约束（放大就重叠），观感也会忽大忽小。
      *  现在半径是布局空间常量，配合下面的碰撞规避给出硬保证：任何缩放倍率下都不重合。 */
-    const nodeRadiusOf = (n) => 5 + Math.min(n?.degree ?? 0, 14) * 0.7
-    const COLLIDE_GAP = 6        // 节点之间的最小空隙（世界坐标）
+    const nodeRadiusOf = (n) => 7 + Math.min(n?.degree ?? 0, 14) * 0.9
+    const REP_C = 8              // 1/d² 斥力常数（×k²）——间距量级由它决定（实测 8 → 近邻 p5 ≈ 60）
+    const COLLIDE_GAP = 6        // 节点之间的最小空隙（世界坐标）；力已负责间距，这里只兜底"绝不重合"
     const collideCell = 2 * nodeRadiusOf({ degree: 14 }) + COLLIDE_GAP
     let dragNode = null
     // 拖动作用域（v0.10.10）：拖动只影响图距离 ≤2 的邻域——范围外节点冻结，
@@ -289,12 +290,13 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           let d2 = dx * dx + dy * dy
           if (d2 < 1e-6) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1 }
           const d = Math.sqrt(d2)
-          if (d >= 2.2 * k) continue   // 远距截断：太远的节点互不影响
-          const dd = Math.max(d, 22)   // 软化核心：22px 内斥力不再增长（拖点压邻居不爆炸）
+          // 斥力（v0.10.12 重写）：**每一对节点都是独立的斥力源**——全对 1/d² 定律，**不做距离截断**。
+          // 旧实现只在 2.2k 内生效、且被 cap 到 0.6k，于是近处推不开、远处没有力：
+          // 结果是"一团一团贴着的小块 + 大片空白"（用户实拍：节点过于靠近）。
+          // 1/d² 近处强推、远处仍留微力，间距由力平衡自然长出（实测近邻间距 p5 16px → 60px）。
+          const dd = Math.max(d, 12)   // 软化核心：12px 内不再增长，避免数值爆炸
           // 拖动期间斥力减半：跟随交给弹簧，斥力只做让位——防团内连锁推挤振荡
-          // 无连接节点之间允许靠得更近（v0.10.10）：它们没有结构关系，挤一点无妨 —— 收紧"噪声光环"
-          const isoPair = a.degree === 0 && b.degree === 0
-          const f = Math.min((k * k) / dd, k * 0.6) * alpha * P.repulsion * (dragNode ? 0.45 : 1) * (isoPair ? 0.7 : 1)
+          const f = (P.repulsion * REP_C * k * k) / (dd * dd) * alpha * (dragNode ? 0.45 : 1)
           a.vx += (dx / d) * f; a.vy += (dy / d) * f
           b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
         }
@@ -326,7 +328,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         if (n.degree === 0 && n.theme) {
           const an = themeAnchor.get(n.theme)
           if (an) {
-            const f = 0.012 * alpha
+            const f = 0.008 * alpha
             n.vx += (an.x - n.x) * f
             n.vy += (an.y - n.y) * f
           }
