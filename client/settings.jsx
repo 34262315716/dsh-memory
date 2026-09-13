@@ -423,12 +423,14 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       }
       {/* graphView 整体 */}
       const gvKeys = GRAPH_VIEW_FIELDS.map(([f]) => f)
-      if (gvKeys.some((f) => drafts[`graphView.${f}`] !== undefined)) {
+      if (gvKeys.some((f) => drafts[`graphView.${f}`] !== undefined) || drafts['graphView.themeShape'] !== undefined) {
         const next = { ...graphView }
         for (const [f] of GRAPH_VIEW_FIELDS) {
           const v = drafts[`graphView.${f}`]
           if (v !== undefined) next[f] = Number(v)
         }
+        // themeShape 是字符串枚举（hull|circle）——不走 NUMERIC_SUB 的 Number 分支
+        if (drafts['graphView.themeShape'] !== undefined) next.themeShape = String(drafts['graphView.themeShape'])
         await scope.set('graphView', next)
       }
       {/* housekeeping 整体 */}
@@ -794,6 +796,17 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
           打开「记忆图谱」面板时读取；改动后重开面板生效。
         </p>
+        <Field label="主题圈形状" hint="hull=贴合凸包（推荐：刚好圈住同主题成员，随组的形状与中心逐帧移动）| circle=最小外接圆（正圆盘，同点集最紧的圆）">
+          <select
+            style={inputStyle}
+            value={drafts['graphView.themeShape'] ?? graphView.themeShape ?? 'hull'}
+            disabled={!writable}
+            onChange={(e) => setText('graphView', 'themeShape', e.target.value)}
+          >
+            <option value="hull">贴合凸包（刚好圈住）</option>
+            <option value="circle">最小外接圆（正圆盘）</option>
+          </select>
+        </Field>
         {GRAPH_VIEW_FIELDS.map(([field, label, hint]) => (
           <Field key={field} label={label} hint={hint}>
             <input

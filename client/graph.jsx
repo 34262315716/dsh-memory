@@ -3,6 +3,7 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 sidebar.footer.action 插槽。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
+import { themeBounds } from './graph-geometry.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
  *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
 function themePalette(n) {
@@ -298,8 +299,11 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.lineTo(e.b.x, e.b.y)
         ctx.stroke()
       }
-      // 主题圈（P2 v0.10）：同主题节点画半透明圆盘 + 主题名，仅成员 ≥3 的主题；
-      // 圆盘跟随节点实时质心/半径（力导向移动时圈住节点），hover/选中时与节点同透明度
+      // 主题圈（P2 v0.10；v0.10.5 重做）：按成员**实际点位**算贴合形状，且每帧重算
+      // —— 圈随主题中心与组形实时移动，不再用「质心 + 最远点」的粗圆（弧状分布会圈进大片空地）。
+      // 形状由 graphView.themeShape 决定：hull=贴合凸包（默认，"刚好圈住"）| circle=最小外接圆（正圆盘）。
+      // padding 跟随节点视觉半径（与节点绘制同口径 /√k）+ 10px 屏幕留白，避免大节点戳出圈外。
+      const themeShape = P.themeShape === 'circle' ? 'circle' : 'hull'
       const themeGroups = new Map()
       for (const n of nodes) {
         const t = n.theme
@@ -309,31 +313,40 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       }
       for (const [theme, members] of themeGroups) {
         if (members.length < 3) continue
-        const cxs = members.reduce((s, n) => s + n.x, 0) / members.length
-        const cys = members.reduce((s, n) => s + n.y, 0) / members.length
-        const radius = Math.max(...members.map((n) => Math.hypot(n.x - cxs, n.y - cys))) + 26
+        let maxNodeR = 0
+        for (const n of members) maxNodeR = Math.max(maxNodeR, (4 + Math.min(n.degree ?? 0, 14) * 0.55) / Math.sqrt(transform.k))
+        const bounds = themeBounds(members, { shape: themeShape, pad: maxNodeR + 10 / transform.k })
+        if (!bounds) continue
         const base = pickColor(data.themes, theme, "note")
         const m = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
         const hue = m ? +m[1] : 200
         const dimmed = focusIds && members.every((n) => !focusIds.has(n.id))
         ctx.globalAlpha = (focusId ? (members.some((n) => n.id === focusId) ? 0.9 : 0.18) : 0.9)
           * overallT * (dimmed ? 0.08 : 1)
-        // 半透明淡色圆盘（拍板样式：非虚线椭圆）
         ctx.beginPath()
-        ctx.arc(cxs, cys, radius, 0, Math.PI * 2)
+        if (bounds.kind === "hull") {
+          const pts = bounds.points
+          ctx.moveTo(pts[0].x, pts[0].y)
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+          ctx.closePath()
+        } else {
+          ctx.arc(bounds.cx, bounds.cy, bounds.r, 0, Math.PI * 2)
+        }
+        // 圆角接缝：外扩多边形顶点本身已贴合，不走顶点圆滑（那会切进节点），只柔化描边转角
+        ctx.lineJoin = "round"
         ctx.fillStyle = `hsla(${hue},70%,60%,0.10)`
         ctx.fill()
         ctx.strokeStyle = `hsla(${hue},74%,65%,0.35)`
         ctx.lineWidth = 1.2 / transform.k
         ctx.setLineDash([])
         ctx.stroke()
-        // 主题名标签（圆盘顶部）
+        // 主题名标签（贴包围区顶部，随圈一起移动）
         ctx.globalAlpha = (focusId ? (members.some((n) => n.id === focusId) ? 0.95 : 0.22) : 0.95)
           * overallT * (dimmed ? 0.08 : 1)
         ctx.font = `bold ${11 / transform.k}px sans-serif`
         ctx.fillStyle = `hsla(${hue},70%,72%,0.9)`
         ctx.textAlign = "center"
-        ctx.fillText(members.length + " · " + theme, cxs, cys - radius - 8 / transform.k)
+        ctx.fillText(members.length + " · " + theme, bounds.cx, bounds.topY - 8 / transform.k)
       }
       ctx.setLineDash([])
       // 边 hover 标签（v0.9.11）：鼠标悬停边时显示类型（+权重）
@@ -617,7 +630,8 @@ function MemoryGraphView({ scope }) {
     repulsion: Number(gv.repulsion) || 1,
     damping: Number(gv.damping) || 0.3,
     gravity: Number(gv.gravity) || 0.005,   // || 而非 ??：Number(undefined)=NaN，NaN??x 仍是 NaN 会击穿力导向
-  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity])
+    themeShape: gv.themeShape === 'circle' ? 'circle' : 'hull',   // 主题圈形状（v0.10.5）
+  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity, gv.themeShape])
 
   const load = useCallback(() => {
     setError("")
