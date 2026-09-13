@@ -3,7 +3,7 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 sidebar.footer.action 插槽。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
-import { themeBounds, clusterByDistance, densityCore, convexHull, padConvexPolygon } from './graph-geometry.js'
+import { themeBounds, clusterByDistance, densityCore, convexHull, padConvexPolygon, polygonContains } from './graph-geometry.js'
 import { layoutSignature, loadLayout, saveLayout, restoredRatio } from './layout-cache.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
  *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
@@ -424,19 +424,28 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       if (!plan) {
         if (regionPlanCache.size > 48) { regionPlanCache.clear(); regionSmooth.clear() }
         const { clusterR: cr, coreEps: ce } = computeThemeScale(edges)
-        const themesToDraw = themeMode === "always" ? [...themeGroupsAll.keys()] : (focusTheme ? [focusTheme] : [])
+        // 两种语义（v0.10.9）：
+        //  · 选中/聚焦某主题（focus 模式或主题筛选）：画**整主题**——把所有成员都包住（其余节点已变灰，
+        //    此刻不需要"只圈密集团"，散落的同主题节点若落在圈外反而费解）；
+        //  · 常显（always）：多个主题同时在图上，只圈各自的**密集团**（densityCore 滤稀疏末端），否则糊成一片。
+        const wholeTheme = !!themeFilterName || themeMode === "focus"
+        const themesToDraw = themeMode === "always" && !themeFilterName ? [...themeGroupsAll.keys()] : (focusTheme ? [focusTheme] : [])
         plan = []
         for (const theme of themesToDraw) {
           const all = themeGroupsAll.get(theme) ?? []
+          if (all.length === 0) continue
+          if (wholeTheme) {
+            const hullPts = convexHull(all)
+            const pinnedIds = hullPts.map((hp) => all.find((n) => n.x === hp.x && n.y === hp.y)?.id).filter(Boolean)
+            plan.push({ theme, members: all, pinnedIds, total: all.length })
+            continue
+          }
           if (all.length < 4) continue
-          // 主题是语义分组，空间上可能摊得很开（实测 45 条成员横跨半个画布）——
-          // 圈整团既不「贴合」也必然盖住别家，故只圈它的**密集团**（densityCore 滤掉链状稀疏末端）
           for (const clump of clusterByDistance(all, cr, { minSize: 4 })) {
             const core = densityCore(clump, { eps: ce, minNeighbors: 2, minSize: 4 })
             if (core.length < 4) continue
             // 凸包钉顶点（v0.10.8）：凸包顶点会随节点微动进出（实测 300 帧 72 次）→ 轮廓突变。
-            // 故在重建计划时把顶点**固定到具体节点**，之后每帧只移动这些节点对应的顶点，
-            // 顶点集合不变 → 轮廓连续变形，不再"多面圈扩大缩小"。
+            // 故在重建计划时把顶点**固定到具体节点**，之后每帧只移动这些节点对应的顶点。
             const hullPts = convexHull(core)
             const pinnedIds = hullPts.map((hp) => core.find((n) => n.x === hp.x && n.y === hp.y)?.id).filter(Boolean)
             plan.push({ theme, members: core, pinnedIds, total: all.length })
@@ -492,6 +501,16 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           drawShape = { kind: "circle", cx, cy, r: rr, topY: cy - rr }
         }
         regionSmooth.set(rk, drawShape)
+        // 覆盖自检（v0.10.9）：钉住顶点的多边形可能因节点漂移而漏掉成员——发现漏点即作废该计划，
+        // 下一帧重建（重建会把漏掉的点重新纳入顶点集），确保"整主题全部被包住"。
+        if (themeShape === "hull" && drawShape.kind === "hull") {
+          for (const n of r.members) {
+            if (!polygonContains(drawShape.points, n)) {
+              regionPlanCache.delete(planKey)
+              break
+            }
+          }
+        }
         const base = pickColor(data.themes, r.theme, "note")
         const mm = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
         const hue = mm ? +mm[1] : 200
