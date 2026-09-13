@@ -62,7 +62,8 @@ export function layoutSignature(data) {
   return `${h.toString(16)}-${ids.length}-${edges}`
 }
 
-const KEY = 'dsh-memory:graph-layout'
+/** 缓存键带版本（v0.10.10：v1 存的是"alpha 衰减伪装平衡"的环形假平衡布局，换版本让其自然作废）。 */
+const KEY = 'dsh-memory:graph-layout:v2'
 
 /** 读缓存（浏览器环境；任何异常 → null）。 */
 export function loadLayout() {

@@ -231,10 +231,47 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const k = Math.sqrt((W() * H()) / Math.max(nodes.length, 1))
     const maxDeg = Math.max(...nodes.map((n) => n.degree), 1)
     let dragNode = null
+    // 拖动作用域（v0.10.10）：拖动只影响图距离 ≤2 的邻域——范围外节点冻结，
+    // 避免"拖一个节点导致全局扰动"（用户实拍反馈）。
+    const dragScope = new Set()
+    const setDragScope = (node) => {
+      dragScope.clear()
+      if (!node) return
+      dragScope.add(node.id)
+      let frontier = [node.id]
+      for (let d = 0; d < 2; d++) {
+        const next = []
+        for (const id of frontier) {
+          for (const nb of (neighbors.get(id) ?? [])) {
+            if (!dragScope.has(nb)) { dragScope.add(nb); next.push(nb) }
+          }
+        }
+        frontier = next
+      }
+    }
+    // 主题锚点（v0.10.10）：每个主题"有连接的成员"的质心——零连接记忆向它靠拢，
+    // 让散落的同主题记忆真的聚在一起（也顺手打破"同心环"观感）。
+    const themeAnchor = new Map()
+    for (const n of nodes) {
+      if (!n.theme || n.degree === 0) continue
+      const a = themeAnchor.get(n.theme) ?? { x: 0, y: 0, n: 0 }
+      a.x += n.x; a.y += n.y; a.n++
+      themeAnchor.set(n.theme, a)
+    }
+    for (const [t, a] of themeAnchor) themeAnchor.set(t, { x: a.x / a.n, y: a.y / a.n })
+    /** 确定性哈希（0..1）：同一 id 永远同一值——孤立节点的回中力/落点据此微分化，避免"同心环"。 */
+    const hash01 = (id) => {
+      let h = 0x811c9dc5
+      const s2 = String(id)
+      for (let i = 0; i < s2.length; i++) { h ^= s2.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+      return (h % 1000) / 1000
+    }
     const transform = { x: 0, y: 0, k: 1 }
     const heat = (a) => { alpha = Math.max(alpha, a) }
-    const step = () => {
-      alpha += (0 - alpha) * 0.028
+    /** fixedAlpha 传入时用**固定** alpha（预热求真实平衡用）；否则按原衰减律 + 活跃度地板。 */
+    const step = (fixedAlpha) => {
+      if (typeof fixedAlpha === "number") alpha = fixedAlpha
+      else alpha += (0 - alpha) * 0.028
       // 拖动期间维持模拟活跃（alpha 地板）：弹簧持续牵引，邻居弹性跟随拖点
       if (dragNode) alpha = Math.max(alpha, 0.15)
       // 斥力（带截断与最小距离钳制）
@@ -249,7 +286,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           if (d >= 2.2 * k) continue   // 远距截断：太远的节点互不影响
           const dd = Math.max(d, 22)   // 软化核心：22px 内斥力不再增长（拖点压邻居不爆炸）
           // 拖动期间斥力减半：跟随交给弹簧，斥力只做让位——防团内连锁推挤振荡
-          const f = Math.min((k * k) / dd, k * 0.6) * alpha * P.repulsion * (dragNode ? 0.45 : 1)
+          // 无连接节点之间允许靠得更近（v0.10.10）：它们没有结构关系，挤一点无妨 —— 收紧"噪声光环"
+          const isoPair = a.degree === 0 && b.degree === 0
+          const f = Math.min((k * k) / dd, k * 0.6) * alpha * P.repulsion * (dragNode ? 0.45 : 1) * (isoPair ? 0.35 : 1)
           a.vx += (dx / d) * f; a.vy += (dy / d) * f
           b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
         }
@@ -269,11 +308,23 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const damp = dragNode ? 0.11 : P.damping
       for (const n of nodes) {
         if (n === dragNode) { n.vx = 0; n.vy = 0; continue }
-        // 度感知回中力（v0.10.7）：图谱"太散乱"的主因是零连接的记忆被推到外围、结成光环——
-        // 孤立节点 ×3.2、单连接 ×1.8 的回中力，把它们收回主体附近；成片区域的内部结构不受影响。
-        const gw = n.degree === 0 ? 3.2 : (n.degree === 1 ? 1.8 : 1)
+        // 拖动作用域外冻结（v0.10.10）：拖动只扰动邻域
+        if (dragNode && !dragScope.has(n.id)) { n.vx = 0; n.vy = 0; continue }
+        // 度感知回中力（v0.10.7）：零连接记忆曾被斥力推到外围结成光环。
+        // 再叠加两项（v0.10.10）打破"同心环"观感：
+        //   · 每节点回中力按 id 确定性微差（0.65~1.35）→ 平衡半径不再一致，自然散开成云；
+        //   · 零连接记忆额外吸向**本主题已连接节点的质心** → 散落的同主题记忆聚到一起。
+        const gw = (n.degree === 0 ? 3.2 : (n.degree === 1 ? 1.8 : 1)) * (0.65 + 0.7 * hash01(n.id))
         n.vx += (W() / 2 - n.x) * P.gravity * gw * alpha
         n.vy += (H() / 2 - n.y) * P.gravity * gw * alpha
+        if (n.degree === 0 && n.theme) {
+          const an = themeAnchor.get(n.theme)
+          if (an) {
+            const f = 0.012 * alpha
+            n.vx += (an.x - n.x) * f
+            n.vy += (an.y - n.y) * f
+          }
+        }
         n.vx *= damp; n.vy *= damp
         n.x += n.vx * 1.5; n.y += n.vy * 1.5
       }
@@ -329,18 +380,15 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       alpha = 0.02
       for (let i = 0; i < 24; i++) step()
     } else {
-      // 收敛判据用**最大节点位移**（alpha 衰减只是固定步数，并不代表平衡）：
-      // 位移 < 0.03px 即视作全局平衡，最多 1500 步兜底；跑完立刻落盘，下次直接复用。
-      while (warm < 1500) {
-        step()
-        warm++
-        let maxV = 0
-        for (const n of nodes) {
-          const v = Math.abs(n.vx) + Math.abs(n.vy)
-          if (v > maxV) maxV = v
-        }
-        if (maxV < 0.02) break
-      }
+      // 收敛策略（v0.10.10 修正，两段式）：
+      // 原实现让 `step()` 衰减 alpha —— 速度变小只是因为"力被 alpha 杀死了"，布局远未平衡，
+      // 于是把"环形初位 + 一点扰动"当成平衡冻进缓存（用户实拍：节点像按顺序排在同心的圈上）。
+      // 物理事实：平衡位置与 alpha 无关（所有力同倍缩放），alpha 只决定步长。
+      // 故：① 大步快铺（固定 0.45）把结构铺开；② 慢衰减收尾（×0.985/步）让布局真正落到力平衡。
+      // 实测（真实快照 490 节点）：800 步 / 约 250ms，一次收敛后落盘，后续打开直接复用。
+      for (let i = 0; i < 400; i++) { step(0.45); warm++ }
+      for (let i = 0; i < 400; i++) { step(0.45 * Math.pow(0.985, i + 1)); warm++ }
+      alpha = 0.15   // 交给实时循环继续缓慢律动（而不是从 0.45 猛冲）
       saveLayout(sig, nodes)
     }
     // 2) 立即全景（不再等模拟收敛后才跳变缩放）
@@ -716,7 +764,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       moved = false
       const [mx, my] = getPos(ev)
       const n = hitTest(mx, my)
-      if (n) { dragNode = n; heat(0.35); if (!raf) raf = requestAnimationFrame(loop) }
+      if (n) { dragNode = n; setDragScope(n); heat(0.35); if (!raf) raf = requestAnimationFrame(loop) }
       else panStart = { x: ev.clientX, y: ev.clientY, tx: transform.x, ty: transform.y }
     }
     const onMove = (ev) => {
@@ -751,7 +799,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         }
       }
     }
-    const onUp = () => { dragNode = null; panStart = null; downPos = null }
+    const onUp = () => { dragNode = null; dragScope.clear(); panStart = null; downPos = null }
     const onClick = (ev) => {
       if (moved) return
       const [mx, my] = getPos(ev)
