@@ -3,7 +3,7 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 sidebar.footer.action 插槽。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
-import { themeBounds, clusterByDistance, densityCore } from './graph-geometry.js'
+import { themeBounds, clusterByDistance, densityCore, convexHull, padConvexPolygon } from './graph-geometry.js'
 import { layoutSignature, loadLayout, saveLayout, restoredRatio } from './layout-cache.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
  *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
@@ -207,12 +207,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     // 主题区域聚簇态（v0.10.6）：自适应门槛缓存 + 帧计数（避免逐帧重算中位边长的开销与抖动）
     let clusterR = 0
     let coreEps = 0
-    let clusterCacheN = -1
-    let frameNo = 0
-    /** 主题区域的自适应尺度（v0.10.6）：聚簇门槛与密度半径都跟随「实测邻边中位长度」——
-     *  布局越密圈越小、越疏圈越大；每 45 帧或节点数变化时刷新，避免逐帧重算与抖动。 */
-    const refreshThemeScale = (nodeCount, edgeList) => {
-      if (clusterR > 0 && clusterCacheN === nodeCount && frameNo % 45 !== 0) return
+    /** 主题区域的自适应尺度（v0.10.8）：聚簇门槛与密度半径跟随「实测邻边中位长度」——
+     *  只在**重建成员划分**时计算一次（不再每 45 帧刷新：定期刷新会让区域形状定期跳变）。 */
+    const computeThemeScale = (edgeList) => {
       const ds = []
       const stepE = Math.max(1, Math.floor(edgeList.length / 240))
       for (let i = 0; i < edgeList.length && ds.length < 240; i += stepE) {
@@ -223,8 +220,14 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const med = ds.length > 0 ? ds[ds.length >> 1] : 60
       clusterR = Math.min(280, Math.max(40, 1.6 * med))   // 聚簇门槛
       coreEps = Math.max(24, 1.0 * med)                   // 密度核心半径
-      clusterCacheN = nodeCount
+      return { clusterR, coreEps }
     }
+    // 区域计划缓存（v0.10.8）：聚簇/密度核心是**离散**判定，节点微动就会让成员跨过阈值 →
+    // 区域数量与形状逐帧抖动（用户实拍："多面圈不断扩大缩小"）。故把「成员划分」缓存起来，
+    // 只在离散事件（数据量变化 / 主题切换 / 模式变化）时重建；每帧只按实时坐标重算包围形状（平滑跟随）。
+    const regionPlanCache = new Map()
+    const regionSmooth = new Map()   // 区域形状的时间平滑状态（v0.10.8）：key = planKey#i
+
     const k = Math.sqrt((W() * H()) / Math.max(nodes.length, 1))
     const maxDeg = Math.max(...nodes.map((n) => n.degree), 1)
     let dragNode = null
@@ -402,7 +405,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       //   off：不画。
       // 形状 themeShape：hull 贴合凸包 / circle 最小外接圆；每帧按实时坐标重算 → 随主题中心移动。
       const themeMode = P.themeScope === "always" ? "always" : (P.themeScope === "off" ? "off" : "focus")
-      const themeShape = P.themeShape === "circle" ? "circle" : "hull"
+      const themeShape = P.themeShape === "hull" ? "hull" : "circle"
       const themeGroupsAll = new Map()
       for (const n of nodes) {
         const t = n.theme
@@ -410,70 +413,117 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         if (!themeGroupsAll.has(t)) themeGroupsAll.set(t, [])
         themeGroupsAll.get(t).push(n)
       }
-      // 要画哪些主题：focus=当前聚焦节点所属主题；always=全部主题（限量）
+      // 要画哪个/哪些主题：主题筛选 > 悬停主题（focus 模式）> 全部（always 模式）
       const focusTheme = (() => {
-        if (themeFilterName) return themeFilterName   // 主题筛选优先：选中即显示该主题的区域
+        if (themeFilterName) return themeFilterName
         const t = focusId ? nodeById.get(focusId)?.theme : null
         return t && t !== "(未归类)" ? t : null
       })()
-      const themesToDraw = themeMode === "always" ? [...themeGroupsAll.keys()] : (themeMode === "focus" && focusTheme ? [focusTheme] : [])
-      const showcase = []   // [{ theme, members, primary, total }]
-      if (themesToDraw.length > 0) {
-        frameNo++
-        refreshThemeScale(nodes.length, edges)
+      const planKey = `${themeMode}|${themeShape}|${themeFilterName ?? ""}|${focusTheme ?? ""}|${nodes.length}|${edges.length}`
+      let plan = regionPlanCache.get(planKey)
+      if (!plan) {
+        if (regionPlanCache.size > 48) { regionPlanCache.clear(); regionSmooth.clear() }
+        const { clusterR: cr, coreEps: ce } = computeThemeScale(edges)
+        const themesToDraw = themeMode === "always" ? [...themeGroupsAll.keys()] : (focusTheme ? [focusTheme] : [])
+        plan = []
         for (const theme of themesToDraw) {
           const all = themeGroupsAll.get(theme) ?? []
           if (all.length < 4) continue
           // 主题是语义分组，空间上可能摊得很开（实测 45 条成员横跨半个画布）——
           // 圈整团既不「贴合」也必然盖住别家，故只圈它的**密集团**（densityCore 滤掉链状稀疏末端）
-          for (const clump of clusterByDistance(all, clusterR, { minSize: 4 })) {
-            const core = densityCore(clump, { eps: coreEps, minNeighbors: 2, minSize: 4 })
+          for (const clump of clusterByDistance(all, cr, { minSize: 4 })) {
+            const core = densityCore(clump, { eps: ce, minNeighbors: 2, minSize: 4 })
             if (core.length < 4) continue
-            showcase.push({ theme, members: core, primary: themeMode === "focus", total: all.length })
+            // 凸包钉顶点（v0.10.8）：凸包顶点会随节点微动进出（实测 300 帧 72 次）→ 轮廓突变。
+            // 故在重建计划时把顶点**固定到具体节点**，之后每帧只移动这些节点对应的顶点，
+            // 顶点集合不变 → 轮廓连续变形，不再"多面圈扩大缩小"。
+            const hullPts = convexHull(core)
+            const pinnedIds = hullPts.map((hp) => core.find((n) => n.x === hp.x && n.y === hp.y)?.id).filter(Boolean)
+            plan.push({ theme, members: core, pinnedIds, total: all.length })
           }
         }
-        showcase.sort((a, b) => b.members.length - a.members.length)
-        if (themeMode === "always") showcase.length = Math.min(showcase.length, 8)
+        plan.sort((a, b) => b.members.length - a.members.length)
+        if (themeMode === "always" && !themeFilterName) plan = plan.slice(0, 8)
+        regionPlanCache.set(planKey, plan)
       }
+      const primaryTheme = !!themeFilterName || themeMode === "focus"
       const themeLabels = []
       let primaryLabeled = false
-      for (const r of showcase) {
+      const SMOOTH = 0.22   // 时间平滑系数：跟手但不过冲（滞后约 4 帧 ≈ 67ms，肉眼无感）
+      for (let i = 0; i < plan.length; i++) {
+        const r = plan[i]
+        const rk = planKey + "#" + i
+        // 每帧按**实时坐标**重算包围形状（成员划分来自缓存 → 形状平滑跟随），再做一次时间平滑：
+        // 实时物理有 0.02 的活跃度地板，节点一直在微动，而凸包顶点会把单点微动放大成外轮廓呼吸
+        // （用户实拍："多面圈不断扩大缩小"）——指数滤波把这种抖动抹平。
         let maxNodeR = 0
         for (const n of r.members) maxNodeR = Math.max(maxNodeR, (4 + Math.min(n.degree ?? 0, 14) * 0.55) / Math.sqrt(transform.k))
-        const bounds = themeBounds(r.members, { shape: themeShape, pad: maxNodeR + 10 / transform.k })
-        if (!bounds) continue
+        const pad = maxNodeR + 10 / transform.k
+        let raw
+        if (themeShape === "hull" && r.pinnedIds && r.pinnedIds.length >= 3) {
+          // 钉住顶点版凸包：顶点集合固定，位置随节点实时更新 → 轮廓连续（配合下面的时间平滑更稳）
+          const poly = r.pinnedIds.map((id) => nodeById.get(id)).filter(Boolean).map((n) => ({ x: n.x, y: n.y }))
+          const hull = convexHull(poly)
+          raw = hull.length >= 3
+            ? { kind: "hull", points: padConvexPolygon(hull, pad), hull, cx: 0, cy: 0, topY: 0 }
+            : themeBounds(r.members, { shape: "circle", pad })
+        } else {
+          raw = themeBounds(r.members, { shape: themeShape, pad })
+        }
+        if (!raw) continue
+        const prev = regionSmooth.get(rk)
+        let drawShape
+        if (raw.kind === "hull") {
+          let pts = raw.points
+          if (prev && prev.kind === "hull" && prev.points.length === pts.length) {
+            pts = pts.map((p, k) => {
+              const q = prev.points[k]
+              return { x: q.x + (p.x - q.x) * SMOOTH, y: q.y + (p.y - q.y) * SMOOTH }
+            })
+          }
+          drawShape = { kind: "hull", points: pts, cx: pts.reduce((a, p) => a + p.x, 0) / pts.length, topY: Math.min(...pts.map((p) => p.y)) }
+        } else {
+          let cx = raw.cx, cy = raw.cy, rr = raw.r
+          if (prev && prev.kind === "circle") {
+            cx = prev.cx + (cx - prev.cx) * SMOOTH
+            cy = prev.cy + (cy - prev.cy) * SMOOTH
+            rr = prev.r + (rr - prev.r) * SMOOTH
+          }
+          drawShape = { kind: "circle", cx, cy, r: rr, topY: cy - rr }
+        }
+        regionSmooth.set(rk, drawShape)
         const base = pickColor(data.themes, r.theme, "note")
         const mm = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
         const hue = mm ? +mm[1] : 200
         const dimmed = r.members.every((n) => dimOf(n.id))
-        // 层序（v0.10.6）：区域画到**边与节点之下**（destination-over）——否则半透明填充像彩色塑料膜
-        // 蒙住整张网络（v0.10.5 实拍"糊"感的一半来源）。放到底层后即成背景底色，网络仍清晰。
-        ctx.globalAlpha = (r.primary ? 0.95 : 0.7) * overallT * (dimmed ? 0.06 : 1)
+        const isPrimary = primaryTheme
+        // 层序（v0.10.6）：区域画到**边与节点之下**（destination-over），否则半透明填充像彩色塑料膜蒙住网络
+        ctx.globalAlpha = (isPrimary ? 0.95 : 0.7) * overallT * (dimmed ? 0.06 : 1)
         ctx.beginPath()
-        if (bounds.kind === "hull") {
-          const pts = bounds.points
+        if (drawShape.kind === "hull") {
+          const pts = drawShape.points
           ctx.moveTo(pts[0].x, pts[0].y)
-          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+          for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y)
           ctx.closePath()
         } else {
-          ctx.arc(bounds.cx, bounds.cy, bounds.r, 0, Math.PI * 2)
+          ctx.arc(drawShape.cx, drawShape.cy, drawShape.r, 0, Math.PI * 2)
         }
         ctx.lineJoin = "round"   // 外扩多边形顶点本身已贴合，不走顶点圆滑（会切进节点），只柔化描边转角
         ctx.globalCompositeOperation = "destination-over"
-        ctx.fillStyle = `hsla(${hue},70%,58%,${r.primary ? 0.14 : 0.10})`
+        ctx.fillStyle = `hsla(${hue},70%,58%,${isPrimary ? 0.14 : 0.10})`
         ctx.fill()
         ctx.globalCompositeOperation = "source-over"
-        ctx.strokeStyle = `hsla(${hue},74%,66%,${r.primary ? 0.5 : 0.28})`
-        ctx.lineWidth = (r.primary ? 1.5 : 1.1) / transform.k
+        ctx.strokeStyle = `hsla(${hue},74%,66%,${isPrimary ? 0.5 : 0.28})`
+        ctx.lineWidth = (isPrimary ? 1.5 : 1.1) / transform.k
         ctx.setLineDash([])
         ctx.stroke()
-        // 聚焦主题：只给最大的那片贴标签（标"主题总数"而非片内数），其余片不刷屏
-        const isPrimaryLabel = r.primary && !primaryLabeled
+        // 聚焦/筛选主题：只给最大的那片贴标签（标"主题总数"而非片内数），其余片不刷屏
+        const isPrimaryLabel = isPrimary && !primaryLabeled
         if (isPrimaryLabel) primaryLabeled = true
         themeLabels.push({
           text: (isPrimaryLabel ? r.total : r.members.length) + " · " + r.theme,
-          x: bounds.cx,
-          y: bounds.topY - 8 / transform.k,
+          x: drawShape.cx,
+          y: drawShape.topY - 8 / transform.k,
           hue,
           primary: isPrimaryLabel,
           dimmed: !!dimmed,
@@ -796,7 +846,7 @@ function MemoryGraphView({ scope }) {
     repulsion: Number(gv.repulsion) || 1,
     damping: Number(gv.damping) || 0.3,
     gravity: Number(gv.gravity) || 0.005,   // || 而非 ??：Number(undefined)=NaN，NaN??x 仍是 NaN 会击穿力导向
-    themeShape: gv.themeShape === 'circle' ? 'circle' : 'hull',   // 主题区域形状（v0.10.5）
+    themeShape: gv.themeShape === 'hull' ? 'hull' : 'circle',   // 主题区域形状（v0.10.8：默认圆形，轮廓连续不抖）
     themeScope: gv.themeScope === 'always' || gv.themeScope === 'off' ? gv.themeScope : 'focus',   // 显示策略（v0.10.6）
   }), [gv.spring, gv.repulsion, gv.damping, gv.gravity, gv.themeShape, gv.themeScope])
 

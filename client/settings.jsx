@@ -809,15 +809,15 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
             <option value="off">关闭</option>
           </select>
         </Field>
-        <Field label="主题圈形状" hint="hull=贴合凸包（推荐：刚好圈住同主题成员，随组的形状与中心逐帧移动）| circle=最小外接圆（正圆盘，同点集最紧的圆）">
+        <Field label="主题圈形状" hint="圆形=最小外接圆（推荐：轮廓连续平滑，不会随节点微动抖动）| 凸包=更贴合组形（顶点已钉住，比裸凸包稳定得多）">
           <select
             style={inputStyle}
-            value={drafts['graphView.themeShape'] ?? graphView.themeShape ?? 'hull'}
+            value={drafts['graphView.themeShape'] ?? graphView.themeShape ?? 'circle'}
             disabled={!writable}
             onChange={(e) => setText('graphView', 'themeShape', e.target.value)}
           >
-            <option value="hull">贴合凸包（刚好圈住）</option>
-            <option value="circle">最小外接圆（正圆盘）</option>
+            <option value="circle">圆形（推荐，轮廓稳定）</option>
+            <option value="hull">贴合凸包（更紧，略欠平滑）</option>
           </select>
         </Field>
         {GRAPH_VIEW_FIELDS.map(([field, label, hint]) => (
