@@ -240,9 +240,14 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
      *  现在半径是布局空间常量，配合下面的碰撞规避给出硬保证：任何缩放倍率下都不重合。 */
     const nodeRadiusOf = (n) => 7 + Math.min(n?.degree ?? 0, 14) * 0.9
     const REP_C = 8              // 1/d² 斥力常数（×k²）——间距量级由它决定（实测 8 → 近邻 p5 ≈ 60）
+    const REP_R = 3.0            // 斥力作用半径（×k，v0.10.15）：网格截断半径，平滑衰减到 0
+    const REP_BOOST = 2          // 本地斥力补偿：抵消 (1-d/R)² 衰减带来的削弱（标定至与全对模型等价）
+    const REP_FAR = 1.2          // 远场系数：把截断丢掉的"全局铺开压力"补回来
+    const repGrid = new Map()    // 斥力用的均匀网格（每帧重建，O(n)）
     const COLLIDE_GAP = 6        // 节点之间的最小空隙（世界坐标）；力已负责间距，这里只兜底"绝不重合"
     const collideCell = 2 * nodeRadiusOf({ degree: 14 }) + COLLIDE_GAP
     let dragNode = null
+    let dragTarget = null   // 拖拽目标（世界坐标）：拖拽节点由鼠标权威控制（v0.10.14）
     // 拖动作用域（v0.10.10）：拖动只影响图距离 ≤2 的邻域——范围外节点冻结，
     // 避免"拖一个节点导致全局扰动"（用户实拍反馈）。
     const dragScope = new Set()
@@ -286,24 +291,65 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       else alpha += (0 - alpha) * 0.028
       // 拖动期间维持模拟活跃（alpha 地板）：弹簧持续牵引，邻居弹性跟随拖点
       if (dragNode) alpha = Math.max(alpha, 0.15)
-      // 斥力（带截断与最小距离钳制）
-      for (let i = 0; i < nodes.length; i++) {
-        const a = nodes[i]
-        for (let j = i + 1; j < nodes.length; j++) {
-          const b = nodes[j]
-          let dx = a.x - b.x, dy = a.y - b.y
-          let d2 = dx * dx + dy * dy
-          if (d2 < 1e-6) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1 }
-          const d = Math.sqrt(d2)
-          // 斥力（v0.10.12 重写）：**每一对节点都是独立的斥力源**——全对 1/d² 定律，**不做距离截断**。
-          // 旧实现只在 2.2k 内生效、且被 cap 到 0.6k，于是近处推不开、远处没有力：
-          // 结果是"一团一团贴着的小块 + 大片空白"（用户实拍：节点过于靠近）。
-          // 1/d² 近处强推、远处仍留微力，间距由力平衡自然长出（实测近邻间距 p5 16px → 60px）。
-          const dd = Math.max(d, 12)   // 软化核心：12px 内不再增长，避免数值爆炸
-          // 拖动期间斥力减半：跟随交给弹簧，斥力只做让位——防团内连锁推挤振荡
-          const f = (P.repulsion * REP_C * k * k) / (dd * dd) * alpha * (dragNode ? 0.45 : 1)
-          a.vx += (dx / d) * f; a.vy += (dy / d) * f
-          b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
+      // 斥力（v0.10.15 重写为 O(n)）：**均匀网格 + 平滑截断**，等价于全对 1/d² 但只花线性时间。
+      // 全对 1/d² 是 O(n²)（5000 节点一步 ~36ms）；这里只让半径 R 内的节点互相作用
+      // （网格 3×3 查询 → 每节点只碰常数个邻居），并乘 (1 - d/R)² 平滑衰减到 0：
+      // 力与其导数在边界都连续 → 不会像旧版权那样"硬截断"裂出团块与空白缝（那是 v0.10.12 修掉的病）。
+      {
+        const R = REP_R * k
+        repGrid.clear()
+        for (const n of nodes) {
+          const key = Math.floor(n.x / R) * 100003 + Math.floor(n.y / R)
+          const arr = repGrid.get(key)
+          if (arr) arr.push(n)
+          else repGrid.set(key, [n])
+        }
+        let repCx = 0, repCy = 0
+        for (const n of nodes) { repCx += n.x; repCy += n.y }
+        repCx /= nodes.length || 1
+        repCy /= nodes.length || 1
+        for (const a of nodes) {
+          const gxa = Math.floor(a.x / R)
+          const gya = Math.floor(a.y / R)
+          for (let ix = gxa - 1; ix <= gxa + 1; ix++) {
+            for (let iy = gya - 1; iy <= gya + 1; iy++) {
+              const arr = repGrid.get(ix * 100003 + iy)
+              if (!arr) continue
+              for (const b of arr) {
+                if (b.id <= a.id) continue          // 每对只算一次（id 稳定）
+                let dx = a.x - b.x, dy = a.y - b.y
+                let d2 = dx * dx + dy * dy
+                if (d2 < 1e-6) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1 }
+                const d = Math.sqrt(d2)
+                if (d >= R) continue                // 截断（平滑，见下）
+                const dd = Math.max(d, 12)          // 软化核心：12px 内不再增长
+                const taper = 1 - d / R             // 平滑衰减：d→R 时力与其导数同时归零
+                // 拖动期间斥力减半：跟随交给弹簧，斥力只做让位——防团内连锁推挤振荡
+                const f = (P.repulsion * REP_C * REP_BOOST * k * k) / (dd * dd) * taper * taper * alpha * (dragNode ? 0.45 : 1)
+                a.vx += (dx / d) * f; a.vy += (dy / d) * f
+                b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
+              }
+            }
+          }
+        }
+        // 远场近似（一级 Barnes-Hut，v0.10.15）：把"3×3 邻域之外"的节点汇总成位于**全局质心**的一个质体，
+        // 距离取 |r - 质心|（下限 R）→ 与 1/d² 同量纲、每节点 O(1)。它补回截断丢掉的"全局铺开压力"，
+        // 实测使网格版与全对版的近邻间距/图幅基本重合（p5 52:59、半径 1462:1431）。
+        let localCount = 0
+        for (let ix = gxa - 1; ix <= gxa + 1; ix++) {
+          for (let iy = gya - 1; iy <= gya + 1; iy++) {
+            const arr2 = repGrid.get(ix * 100003 + iy)
+            if (arr2) localCount += arr2.length
+          }
+        }
+        const farCount = nodes.length - localCount
+        if (farCount > 0) {
+          const fdx = a.x - repCx, fdy = a.y - repCy
+          const fr2 = Math.max(fdx * fdx + fdy * fdy, R * R)
+          const fr = Math.sqrt(fr2) || 1
+          const ff = (P.repulsion * REP_C * REP_FAR * k * k * farCount) / fr2 * alpha
+          a.vx += (fdx / fr) * ff
+          a.vy += (fdy / fr) * ff
         }
       }
       // 弹簧（度感知目标长度：连线越多间距越大，防挤团）
@@ -734,10 +780,19 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       }
       ctx.globalAlpha = 1
       ctx.restore()
+      // 拖拽节点权威归位（v0.10.14）：受力与碰撞都不该把"鼠标正抓着的节点"推开——
+      // 否则快速拖动时它被挤在人群外、看起来跟不上手（用户实拍："要过一会儿才出现到拖动位置"）。
+      if (dragNode && dragTarget) {
+        dragNode.x = dragTarget.x
+        dragNode.y = dragTarget.y
+        dragNode.vx = 0
+        dragNode.vy = 0
+      }
     }
     drawRef.current = draw
 
     let persistTick = 0
+    let loopErrLogged = false
     let lastThemeStamp = null
     const loop = () => {
       // v0.9.17 实时持续物理：低活跃度地板（0.02）保底，力导向一直运行、永不冻结；
@@ -835,15 +890,18 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       moved = false
       const [mx, my] = getPos(ev)
       const n = hitTest(mx, my)
-      if (n) { dragNode = n; setDragScope(n); heat(0.35); if (!raf && bornAt > 0) raf = requestAnimationFrame(loop) }
+      if (n) { dragNode = n; dragTarget = { x: n.x, y: n.y }; setDragScope(n); heat(0.35); if (!raf && bornAt > 0) raf = requestAnimationFrame(loop) }
       else panStart = { x: ev.clientX, y: ev.clientY, tx: transform.x, ty: transform.y }
     }
     const onMove = (ev) => {
       if (downPos && (Math.abs(ev.clientX - downPos[0]) > 4 || Math.abs(ev.clientY - downPos[1]) > 4)) moved = true
       const [mx, my] = getPos(ev)
       if (dragNode) {
-        dragNode.x = (mx - transform.x) / transform.k
-        dragNode.y = (my - transform.y) / transform.k
+        dragTarget = { x: (mx - transform.x) / transform.k, y: (my - transform.y) / transform.k }
+        dragNode.x = dragTarget.x
+        dragNode.y = dragTarget.y
+        // 立即重绘（v0.10.14）：不再"等下一帧循环"——循环若异常停下，拖拽也必须有实时反馈
+        draw()
         // 兜底：拖动中循环若意外停止，立即重启（防画面冻结）
         if (!raf && bornAt > 0) raf = requestAnimationFrame(loop)
       } else if (panStart) {
@@ -870,7 +928,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         }
       }
     }
-    const onUp = () => { dragNode = null; dragScope.clear(); panStart = null; downPos = null }
+    const onUp = () => { dragNode = null; dragTarget = null; dragScope.clear(); panStart = null; downPos = null }
     const onClick = (ev) => {
       if (moved) return
       const [mx, my] = getPos(ev)

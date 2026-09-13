@@ -15,7 +15,7 @@
 export const STOP_SPEED = 0.02
 
 /** 自动降档阈值（节点数）。 */
-export const AUTO_DOWNGRADE = { balanced: 900, instant: 1800 }
+export const AUTO_DOWNGRADE = { balanced: 2000, instant: 6000 }   // v0.10.14：斥力改 O(n) 后放宽（8k 节点每步 ~15ms）
 
 /**
  * @param {{quality?:string, nodeCount?:number, hasCache?:boolean}} opts
