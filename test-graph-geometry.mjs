@@ -1,6 +1,7 @@
 // v0.10.5 专题：主题圈几何守护（贴合凸包 / 最小外接圆 / 随中心移动）
 // 用法: node test-graph-geometry.mjs（纯函数，无需部署副本环境）
 import { convexHull, padConvexPolygon, polygonContains, minimalEnclosingCircle, circleContains, themeBounds, clusterByDistance, boundsBox, densityCore } from './client/graph-geometry.js'
+import { encodeLayout, decodeLayout, restoredRatio, layoutSignature } from './client/layout-cache.js'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
@@ -169,6 +170,25 @@ console.log('== 6. densityCore：密度核心（稀疏末端不吃圈） =======
   check('eps 非法 → 原样返回（不静默清空）', densityCore(compact, { eps: 0 }).length === 5)
   check('确定性：同输入两次结果一致', JSON.stringify(densityCore(withOutlier, { eps: 60 })) === JSON.stringify(kept))
   check('minNeighbors 提高后更严格（链上每点仅 2 邻居 → 全不合格）', densityCore(chain5, { eps: 61, minNeighbors: 3, minSize: 3 }).length === 0)
+}
+
+console.log('== 7. layout-cache：布局落盘 / 按 id 复用（v0.10.7） ============')
+{
+  const nodes = [{ id: 'a', x: 12.34, y: -5.67 }, { id: 'b', x: 100, y: 200 }, { id: 'c', x: NaN, y: 1 }]
+  const raw = encodeLayout('sig-1', nodes)
+  const dec = decodeLayout(raw)
+  check('编码后能解回（跳过非法坐标）', dec && dec.map.size === 2 && dec.map.get('a')[0] === 12.3)
+  check('签名一并存入', dec.sig === 'sig-1')
+  check('坐标取 1 位小数（体积减半、肉眼无差）', JSON.parse(raw).pos[1][1] === 100 && JSON.parse(raw).pos[0][2] === -5.7)
+  // 复用率：拓扑变了也能按 id 复用（关键设计——每写一条记忆拓扑就变）
+  const cur = [{ id: 'a' }, { id: 'b' }, { id: 'x' }, { id: 'y' }]
+  check('复用率按 id 交集计算（2/4 = 0.5）', Math.abs(restoredRatio(dec.map, cur) - 0.5) < 1e-9)
+  check('全命中 = 1', restoredRatio(dec.map, [{ id: 'a' }, { id: 'b' }]) === 1)
+  check('缓存为空/无节点 = 0', restoredRatio(null, cur) === 0 && restoredRatio(dec.map, []) === 0)
+  check('坏数据不抛（null / 非 JSON / 空数组）', decodeLayout(null) === null && decodeLayout('not json') === null && decodeLayout('[]') === null)
+  check('兼容早期数组格式', decodeLayout('[["a",1,2]]')?.map.get('a')[0] === 1)
+  check('签名对拓扑变化敏感、对顺序不敏感', layoutSignature({ nodes: [{ id: 'a' }, { id: 'b' }], edges: [] }) === layoutSignature({ nodes: [{ id: 'b' }, { id: 'a' }], edges: [] }))
+  check('边数变化 → 签名变化', layoutSignature({ nodes: [{ id: 'a' }], edges: [] }) !== layoutSignature({ nodes: [{ id: 'a' }], edges: [1] }))
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

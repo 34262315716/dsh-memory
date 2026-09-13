@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { themeBounds, clusterByDistance, densityCore } from './graph-geometry.js'
+import { layoutSignature, loadLayout, saveLayout, restoredRatio } from './layout-cache.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
  *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
 function themePalette(n) {
@@ -129,7 +130,7 @@ function layoutNodes(data, W, H) {
  *  交互：拖节点（固定 + 重新加热）、拖背景平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击选中
  *  性能：单 Canvas 每帧整绘（数百节点 <5ms）；选中/hover 经 ref 传入，组件零重渲染
  */
-const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef }) {
+const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef, themeFocusRef }) {
   const canvasRef = useRef(null)
   const hoverRef = useRef(null)
   const hoverEdgeRef = useRef(null)
@@ -156,12 +157,35 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const colorOf = (theme, type) => pickColor(data.themes, theme, type)
     const degree = new Map()
     for (const e of data.edges) { degree.set(e.from, (degree.get(e.from) ?? 0) + 1); degree.set(e.to, (degree.get(e.to) ?? 0) + 1) }
-    // 初始位置：主题环形布局（力导向从有序起点自然展开，观感优雅）
+    // 初始位置（v0.10.7）：**优先复用上次收敛坐标**（localStorage，按 id 取交集）——
+    // 打开即落在"全局平衡"位置，不再每次从环形初位重跑一遍迁移；新节点（缓存里没有的）
+    // 落在同主题已恢复节点的质心附近，再由力导向微调，平滑接纳新记忆。
     const init = layoutNodes(data, W(), H())
+    const sig = layoutSignature(data)
+    const cached = loadLayout()
+    const cacheMap = cached?.map ?? null
+    const reuse = restoredRatio(cacheMap, data.nodes)
+    const restoreOk = reuse >= 0.85
+    // 同主题质心（给新节点找落点）
+    const themeCentroid = new Map()
+    if (cacheMap) {
+      const acc = new Map()
+      for (const n of data.nodes) {
+        const p = cacheMap.get(n.id)
+        if (!p || !n.theme) continue
+        const a = acc.get(n.theme) ?? { x: 0, y: 0, n: 0 }
+        a.x += p[0]; a.y += p[1]; a.n++
+        acc.set(n.theme, a)
+      }
+      for (const [t, a] of acc) if (a.n > 0) themeCentroid.set(t, [a.x / a.n, a.y / a.n])
+    }
     const now = Date.now()
     const minCreated = Math.min(...data.nodes.map((n) => n.createdAt ?? now), now)
     const nodes = data.nodes.map((n) => {
-      const p = init.positions.get(n.id) ?? [W() / 2 + (Math.random() - 0.5) * 60, H() / 2 + (Math.random() - 0.5) * 60]
+      const cachedPos = cacheMap?.get(n.id)
+      const cen = n.theme ? themeCentroid.get(n.theme) : null
+      const p = cachedPos ?? (cen ? [cen[0] + (Math.random() - 0.5) * 90, cen[1] + (Math.random() - 0.5) * 90] : null)
+        ?? init.positions.get(n.id) ?? [W() / 2 + (Math.random() - 0.5) * 60, H() / 2 + (Math.random() - 0.5) * 60]
       // 基色（主题色/类型色）→ strength 微调 → 色相抖动（仅无主题）→ 新旧色温（新亮旧暗）
       return { ...n, x: p[0], y: p[1], vx: 0, vy: 0, degree: degree.get(n.id) ?? 0, color: nodeColor(colorOf(n.theme, n.type), n.strength, n.createdAt, minCreated, now, n.theme ? null : n.id) }
     })
@@ -242,8 +266,11 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const damp = dragNode ? 0.11 : P.damping
       for (const n of nodes) {
         if (n === dragNode) { n.vx = 0; n.vy = 0; continue }
-        n.vx += (W() / 2 - n.x) * P.gravity * alpha
-        n.vy += (H() / 2 - n.y) * P.gravity * alpha
+        // 度感知回中力（v0.10.7）：图谱"太散乱"的主因是零连接的记忆被推到外围、结成光环——
+        // 孤立节点 ×3.2、单连接 ×1.8 的回中力，把它们收回主体附近；成片区域的内部结构不受影响。
+        const gw = n.degree === 0 ? 3.2 : (n.degree === 1 ? 1.8 : 1)
+        n.vx += (W() / 2 - n.x) * P.gravity * gw * alpha
+        n.vy += (H() / 2 - n.y) * P.gravity * gw * alpha
         n.vx *= damp; n.vy *= damp
         n.x += n.vx * 1.5; n.y += n.vy * 1.5
       }
@@ -267,11 +294,52 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       transform.y = (H() - bh * transform.k) / 2 - minY * transform.k
     }
 
+    /** 聚焦到指定节点集合（v0.10.7）：主题筛选后自动把视口收拢到该主题，
+     *  留 130px 边距、上限放大 2.4×（密度低时不至于糊成巨点）。 */
+    const fitTo = (ids) => {
+      if (!ids || ids.size === 0) return
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      let hit = 0
+      for (const n of nodes) {
+        if (!ids.has(n.id)) continue
+        hit++
+        if (n.x < minX) minX = n.x
+        if (n.y < minY) minY = n.y
+        if (n.x > maxX) maxX = n.x
+        if (n.y > maxY) maxY = n.y
+      }
+      if (hit === 0) return
+      const pad = 130
+      const bw = Math.max(maxX - minX, 80), bh = Math.max(maxY - minY, 80)
+      const kFit = Math.min((W() - pad * 2) / bw, (H() - pad * 2) / bh, 2.4)
+      transform.k = Math.max(0.28, kFit)
+      transform.x = (W() - bw * transform.k) / 2 - minX * transform.k
+      transform.y = (H() - bh * transform.k) / 2 - minY * transform.k
+    }
+
     // ---- 打开动画：预热模拟 → 立即全景 → 从中心向两边平滑显现 ----
-    // 1) 预热：跑到力导向真正收敛（alpha 冷却到阈值）——打开面板时刻节点已在平衡位，
-    //    不再从固定位置慢慢迁移到平衡；入场只是淡入放大。
+    // 1) 预热（v0.10.7）：
+    //    - 命中缓存（≥85% 节点有旧坐标）：坐标已是上次收敛态 → 只做几步微松弛，打开即"全局平衡"；
+    //    - 未命中：把力导向**跑到收敛**（alpha ≤ 0.003，上限 2500 步）再落盘 —— 等于"把平衡跑在打开之前"。
     let warm = 0
-    while (warm < 800 && alpha > 0.006) { step(); warm++ }
+    if (restoreOk) {
+      alpha = 0.02
+      for (let i = 0; i < 24; i++) step()
+    } else {
+      // 收敛判据用**最大节点位移**（alpha 衰减只是固定步数，并不代表平衡）：
+      // 位移 < 0.03px 即视作全局平衡，最多 1500 步兜底；跑完立刻落盘，下次直接复用。
+      while (warm < 1500) {
+        step()
+        warm++
+        let maxV = 0
+        for (const n of nodes) {
+          const v = Math.abs(n.vx) + Math.abs(n.vy)
+          if (v > maxV) maxV = v
+        }
+        if (maxV < 0.02) break
+      }
+      saveLayout(sig, nodes)
+    }
     // 2) 立即全景（不再等模拟收敛后才跳变缩放）
     fitToView()
     // 3) 显现动画参数：节点按距视口中心距离延迟淡入+放大（中心先亮，向两边扩散）
@@ -304,12 +372,17 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const focusId = selId || hovId
       // 事件高亮（阶段四）：focusIds 非空时，非事件成员降透明度
       const focusIds = focusIdsRef?.current ?? null
+      // 主题筛选（v0.10.7）：选中某主题 → 该主题节点保留、其余变灰降透明；与事件高亮可叠加
+      const tf = themeFocusRef?.current ?? null
+      const themeFilterName = tf?.theme ?? null
+      const themeIds = tf?.ids ?? null
+      const dimOf = (id) => (focusIds && !focusIds.has(id)) || (themeIds && !themeIds.has(id))
       // 入场动画：边整体淡入（350ms），节点按距中心距离延迟显现
       const elapsed = performance.now() - bornAt
       const overallT = Math.min(1, elapsed / 350)
       for (const e of edges) {
         const on = !focusId || e.a.id === focusId || e.b.id === focusId
-        const dimmed = focusIds && !(focusIds.has(e.a.id) && focusIds.has(e.b.id))
+        const dimmed = dimOf(e.a.id) || dimOf(e.b.id)
         const st = EDGE_STYLE[e.type] ?? EDGE_STYLE.similarTo
         ctx.globalAlpha = (focusId ? (on ? 1 : 0.08) : (st.alpha ?? 0.45)) * overallT * (dimmed ? 0.08 : 1)
         ctx.strokeStyle = st.color
@@ -339,6 +412,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       }
       // 要画哪些主题：focus=当前聚焦节点所属主题；always=全部主题（限量）
       const focusTheme = (() => {
+        if (themeFilterName) return themeFilterName   // 主题筛选优先：选中即显示该主题的区域
         const t = focusId ? nodeById.get(focusId)?.theme : null
         return t && t !== "(未归类)" ? t : null
       })()
@@ -371,7 +445,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         const base = pickColor(data.themes, r.theme, "note")
         const mm = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
         const hue = mm ? +mm[1] : 200
-        const dimmed = focusIds && r.members.every((n) => !focusIds.has(n.id))
+        const dimmed = r.members.every((n) => dimOf(n.id))
         // 层序（v0.10.6）：区域画到**边与节点之下**（destination-over）——否则半透明填充像彩色塑料膜
         // 蒙住整张网络（v0.10.5 实拍"糊"感的一半来源）。放到底层后即成背景底色，网络仍清晰。
         ctx.globalAlpha = (r.primary ? 0.95 : 0.7) * overallT * (dimmed ? 0.06 : 1)
@@ -429,7 +503,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       for (const n of nodes) {
         const isFocus = n.id === focusId
         const isNbr = focusId && neighbors.get(focusId)?.has(n.id)
-        const dimmed = focusIds && !focusIds.has(n.id)
+        const dimmed = dimOf(n.id)
         // 从中心向两边显现：延迟按距中心距离比例（0~55% 的动画时长），easeOutCubic 放大+淡入
         const dist = Math.hypot(n.x - cx0, n.y - cy0)
         const delay = (dist / maxDist) * 0.55 * revealMs
@@ -520,12 +594,24 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     }
     drawRef.current = draw
 
+    let persistTick = 0
+    let lastThemeStamp = null
     const loop = () => {
       // v0.9.17 实时持续物理：低活跃度地板（0.02）保底，力导向一直运行、永不冻结；
       // 打开已收敛（warmup），故只做缓慢弹性律动，无 v0.9.13 的高频抖动
       alpha = Math.max(alpha, 0.02)
       step()
+      // 主题筛选（v0.10.7）：stamp 变化 → 视口收拢到该主题（只做一次，之后用户可自由平移缩放）
+      const tf = themeFocusRef?.current ?? null
+      if (tf && tf.stamp !== lastThemeStamp) {
+        lastThemeStamp = tf.stamp
+        if (tf.ids && tf.ids.size > 0) fitTo(tf.ids)
+      } else if (!tf) {
+        lastThemeStamp = null
+      }
       draw()
+      // 布局落盘（v0.10.7）：每 ~5s 存一次当前收敛坐标，供下次打开直接落位
+      if (++persistTick % 300 === 0) saveLayout(sig, nodes)
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
@@ -620,6 +706,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     canvas.addEventListener("wheel", onWheel, { passive: false })
 
     return () => {
+      saveLayout(sig, nodes)   // 关闭面板时落盘当前收敛布局（v0.10.7）
       cancelAnimationFrame(raf)
       drawRef.current = null
       window.removeEventListener("resize", resize)
@@ -771,6 +858,30 @@ function MemoryGraphView({ scope }) {
     drawRef.current?.()
   }, [eventFilter, filtered, data])
 
+  // 主题筛选（v0.10.7）：选中某主题 → 该主题节点/边保留，其余变灰降透明；视口自动收拢到该主题
+  const [themeFilter, setThemeFilter] = useState("all")
+  const themeFocusRef = useRef(null)
+  const themeStampRef = useRef(0)
+  const themeCounts = useMemo(() => {
+    const m = new Map()
+    for (const n of filtered?.nodes ?? []) {
+      const t = n.theme
+      if (!t) continue
+      m.set(t, (m.get(t) ?? 0) + 1)
+    }
+    return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  }, [filtered])
+  useEffect(() => {
+    if (themeFilter === "all") {
+      themeFocusRef.current = null
+    } else {
+      const ids = new Set((filtered?.nodes ?? []).filter((n) => n.theme === themeFilter).map((n) => n.id))
+      // 空集合会把整图变灰（dimOf 对每个节点都返回 true）——该主题在当前时间窗内没有节点时不启用筛选
+      themeFocusRef.current = ids.size > 0 ? { theme: themeFilter, ids, stamp: ++themeStampRef.current } : null
+    }
+    drawRef.current?.()
+  }, [themeFilter, filtered])
+
   if (error) {
     return (
       <div style={{ padding: 24 }}>
@@ -814,9 +925,22 @@ function MemoryGraphView({ scope }) {
               </option>
             ))}
           </select>
+          <select
+            value={themeFilter}
+            onChange={(e) => setThemeFilter(e.target.value)}
+            style={{ padding: "1px 6px", fontSize: 12, borderRadius: 5, border: "1px solid #555", background: "#1a1a1a", color: "#ccc", maxWidth: 220 }}
+            title="按主题筛选：选中的主题高亮并自动聚焦视口，其余记忆变灰"
+          >
+            <option value="all">全部主题</option>
+            {themeCounts.map(([t, c]) => (
+              <option key={t} value={t}>
+                {t}（{c} 条）
+              </option>
+            ))}
+          </select>
           <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
-        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} />
+        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} themeFocusRef={themeFocusRef} />
         <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2, display: "flex", flexWrap: "wrap", gap: 8, maxWidth: "72%", justifyContent: "flex-end", alignItems: "center" }}>
           {(filtered?.nodes ?? []).length > 0 && (
             <>
