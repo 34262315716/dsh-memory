@@ -1,6 +1,6 @@
 // v0.10.5 专题：主题圈几何守护（贴合凸包 / 最小外接圆 / 随中心移动）
 // 用法: node test-graph-geometry.mjs（纯函数，无需部署副本环境）
-import { convexHull, padConvexPolygon, polygonContains, minimalEnclosingCircle, circleContains, themeBounds } from './client/graph-geometry.js'
+import { convexHull, padConvexPolygon, polygonContains, minimalEnclosingCircle, circleContains, themeBounds, clusterByDistance, boundsBox, densityCore } from './client/graph-geometry.js'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
@@ -112,6 +112,63 @@ console.log('== 4. themeBounds：贴合形状 + 随中心移动 ============')
   check('空集 → null', themeBounds([]) === null)
   check('非法坐标被过滤后仍可用', themeBounds([P(0, 0), P(NaN, 1), P(10, 0), P(5, 9)]).kind === 'hull')
   check('pad 缺省不报错（默认 18）', themeBounds([P(0, 0), P(20, 0), P(10, 18)]).kind === 'hull')
+}
+
+console.log('== 5. clusterByDistance / boundsBox：就地聚簇（v0.10.6） ============')
+{
+  const apart = [P(0, 0), P(10, 5), P(400, 0), P(405, 6), P(398, -4)]
+  const g2 = clusterByDistance(apart, 40, { minSize: 2 })
+  check('相距远的成员拆成 2 个局部团', g2.length === 2)
+  check('团内成员数正确（3 + 2）', g2[0].length === 3 && g2[1].length === 2)
+  check('大团排在前面（确定性层叠顺序）', g2[0].length >= g2[1].length)
+  check('确定性：同输入两次结果一致', JSON.stringify(clusterByDistance(apart, 40)) === JSON.stringify(clusterByDistance(apart, 40)))
+  // 单链连通：A-B 近、B-C 近、A-C 远 → 仍归一团（避免把一条链切碎）
+  const chain = [P(0, 0), P(30, 0), P(60, 0)]
+  check('单链连通归为一团', clusterByDistance(chain, 40).length === 1)
+  check('阈值放大后相邻两簇合并为一团', clusterByDistance(apart, 500).length === 1)
+  check('minSize 过滤掉小团', clusterByDistance(apart, 40, { minSize: 3 }).length === 1)
+  check('散布的孤立点各自成团（画圈时会被 minSize 滤掉）', clusterByDistance([P(0, 0), P(300, 200), P(-400, 90)], 40, { minSize: 1 }).length === 3)
+  check('空/单点/非法坐标安全', clusterByDistance([], 40).length === 0 && clusterByDistance([P(1, 1)], 40).length === 1
+    && clusterByDistance([P(0, 0), P(NaN, 3), P(2, 2)], 40).length === 1)
+  check('阈值非法（0/NaN）→ 每点独立，不抛错', clusterByDistance([P(0, 0), P(1, 1)], 0).length === 2 && clusterByDistance([P(0, 0), P(1, 1)], NaN).length === 2)
+
+  // boundsBox：给绘制用的外接矩形
+  const tri = [P(0, 0), P(40, 0), P(20, 30)]
+  const bh = themeBounds(tri, { pad: 5 })
+  const box = boundsBox(bh)
+  check('hull 包围盒覆盖全部成员', tri.every((p) => p.x >= box.minX - 1e-6 && p.x <= box.maxX + 1e-6 && p.y >= box.minY - 1e-6 && p.y <= box.maxY + 1e-6))
+  const bc = themeBounds(tri, { shape: 'circle', pad: 5 })
+  const boxC = boundsBox(bc)
+  check('circle 包围盒按半径外接', Math.abs((boxC.maxX - boxC.minX) - 2 * bc.r) < 1e-6)
+  check('null → null', boundsBox(null) === null)
+}
+
+console.log('== 6. densityCore：密度核心（稀疏末端不吃圈） ============')
+{
+  // 紧凑 4 点 + 1 个远处离群点：离群点没邻居 → 被滤掉，圈不被撑大
+  const core = [P(0, 0), P(30, 0), P(0, 30), P(30, 30)]
+  const withOutlier = [...core, P(400, 300)]
+  const kept = densityCore(withOutlier, { eps: 60, minNeighbors: 2, minSize: 3 })
+  check('离群点被滤掉（4 点核心保留）', kept.length === 4)
+  check('核心成员全部保留', core.every((c) => kept.some((p) => p.x === c.x && p.y === c.y)))
+  const loose = themeBounds(withOutlier, { shape: 'circle', pad: 10 })
+  const tight = themeBounds(kept, { shape: 'circle', pad: 10 })
+  check('串联 themeBounds：圈面积大幅缩小（不再兜住空地）', Math.PI * tight.r ** 2 < Math.PI * loose.r ** 2 * 0.35)
+  check('未滤除时最小外接圆被离群点撑大（对照）', loose.r > 200)
+  // 紧凑点集：全都有邻居 → 一个不剔
+  const compact = [P(0, 0), P(20, 0), P(10, 17), P(5, 8), P(15, 9)]
+  check('紧凑点集全保留（不误剔核心）', densityCore(compact, { eps: 60, minNeighbors: 2 }).length === 5)
+  // 链状：端点只有 1 个邻居 → 被滤；4 点链只剩 2 点 < minSize → 空（该团不画圈）
+  const chain4 = [P(0, 0), P(60, 0), P(120, 0), P(180, 0)]
+  check('4 点链：核心不足 → 返回空（不成区域，不画圈）', densityCore(chain4, { eps: 61, minNeighbors: 2, minSize: 3 }).length === 0)
+  const chain5 = [P(0, 0), P(60, 0), P(120, 0), P(180, 0), P(240, 0)]
+  check('5 点链：只留中间 3 点（两端稀疏末端被滤）', densityCore(chain5, { eps: 61, minNeighbors: 2, minSize: 3 }).length === 3)
+  check('输入不足 minSize → 返回空', densityCore([P(0, 0), P(5, 5)], { eps: 60, minSize: 3 }).length === 0)
+  check('空输入/非法坐标安全', densityCore([], { eps: 60 }).length === 0
+    && densityCore([P(0, 0), P(NaN, 1), P(10, 0), P(0, 10)], { eps: 60, minSize: 3 }).length === 3)
+  check('eps 非法 → 原样返回（不静默清空）', densityCore(compact, { eps: 0 }).length === 5)
+  check('确定性：同输入两次结果一致', JSON.stringify(densityCore(withOutlier, { eps: 60 })) === JSON.stringify(kept))
+  check('minNeighbors 提高后更严格（链上每点仅 2 邻居 → 全不合格）', densityCore(chain5, { eps: 61, minNeighbors: 3, minSize: 3 }).length === 0)
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

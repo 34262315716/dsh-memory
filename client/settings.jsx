@@ -423,14 +423,15 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       }
       {/* graphView 整体 */}
       const gvKeys = GRAPH_VIEW_FIELDS.map(([f]) => f)
-      if (gvKeys.some((f) => drafts[`graphView.${f}`] !== undefined) || drafts['graphView.themeShape'] !== undefined) {
+      if (gvKeys.some((f) => drafts[`graphView.${f}`] !== undefined) || drafts['graphView.themeShape'] !== undefined || drafts['graphView.themeScope'] !== undefined) {
         const next = { ...graphView }
         for (const [f] of GRAPH_VIEW_FIELDS) {
           const v = drafts[`graphView.${f}`]
           if (v !== undefined) next[f] = Number(v)
         }
-        // themeShape 是字符串枚举（hull|circle）——不走 NUMERIC_SUB 的 Number 分支
+        // themeShape/themeScope 是字符串枚举（hull|circle / focus|always|off）——不走 NUMERIC_SUB 的 Number 分支
         if (drafts['graphView.themeShape'] !== undefined) next.themeShape = String(drafts['graphView.themeShape'])
+        if (drafts['graphView.themeScope'] !== undefined) next.themeScope = String(drafts['graphView.themeScope'])
         await scope.set('graphView', next)
       }
       {/* housekeeping 整体 */}
@@ -796,6 +797,18 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
           打开「记忆图谱」面板时读取；改动后重开面板生效。
         </p>
+        <Field label="主题圈显示" hint="聚焦时=只在悬停/选中节点时显示它所属主题的完整范围（默认，零干扰）| 常显=为每个主题的密集团画圈（滤掉稀疏末端，最多 8 片）| 关闭=不画">
+          <select
+            style={inputStyle}
+            value={drafts['graphView.themeScope'] ?? graphView.themeScope ?? 'focus'}
+            disabled={!writable}
+            onChange={(e) => setText('graphView', 'themeScope', e.target.value)}
+          >
+            <option value="focus">聚焦时显示（推荐）</option>
+            <option value="always">常显（密集团）</option>
+            <option value="off">关闭</option>
+          </select>
+        </Field>
         <Field label="主题圈形状" hint="hull=贴合凸包（推荐：刚好圈住同主题成员，随组的形状与中心逐帧移动）| circle=最小外接圆（正圆盘，同点集最紧的圆）">
           <select
             style={inputStyle}

@@ -3,7 +3,7 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 sidebar.footer.action 插槽。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
-import { themeBounds } from './graph-geometry.js'
+import { themeBounds, clusterByDistance, densityCore } from './graph-geometry.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
  *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
 function themePalette(n) {
@@ -180,6 +180,27 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     //  弹簧：目标长度度感知（枢纽节点周围留更大空间）+ 强度 0.07（更紧）
     //  中心引力：0.005 线性（孤立节点回归中心；被拖拽节点豁免）
     let alpha = 0.45, raf = 0   // 初始 α 调低：首帧运动更温和（配合预热，打开即稳定全景）
+    // 主题区域聚簇态（v0.10.6）：自适应门槛缓存 + 帧计数（避免逐帧重算中位边长的开销与抖动）
+    let clusterR = 0
+    let coreEps = 0
+    let clusterCacheN = -1
+    let frameNo = 0
+    /** 主题区域的自适应尺度（v0.10.6）：聚簇门槛与密度半径都跟随「实测邻边中位长度」——
+     *  布局越密圈越小、越疏圈越大；每 45 帧或节点数变化时刷新，避免逐帧重算与抖动。 */
+    const refreshThemeScale = (nodeCount, edgeList) => {
+      if (clusterR > 0 && clusterCacheN === nodeCount && frameNo % 45 !== 0) return
+      const ds = []
+      const stepE = Math.max(1, Math.floor(edgeList.length / 240))
+      for (let i = 0; i < edgeList.length && ds.length < 240; i += stepE) {
+        const e = edgeList[i]
+        ds.push(Math.hypot(e.a.x - e.b.x, e.a.y - e.b.y))
+      }
+      ds.sort((x, y) => x - y)
+      const med = ds.length > 0 ? ds[ds.length >> 1] : 60
+      clusterR = Math.min(280, Math.max(40, 1.6 * med))   // 聚簇门槛
+      coreEps = Math.max(24, 1.0 * med)                   // 密度核心半径
+      clusterCacheN = nodeCount
+    }
     const k = Math.sqrt((W() * H()) / Math.max(nodes.length, 1))
     const maxDeg = Math.max(...nodes.map((n) => n.degree), 1)
     let dragNode = null
@@ -299,30 +320,61 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.lineTo(e.b.x, e.b.y)
         ctx.stroke()
       }
-      // 主题圈（P2 v0.10；v0.10.5 重做）：按成员**实际点位**算贴合形状，且每帧重算
-      // —— 圈随主题中心与组形实时移动，不再用「质心 + 最远点」的粗圆（弧状分布会圈进大片空地）。
-      // 形状由 graphView.themeShape 决定：hull=贴合凸包（默认，"刚好圈住"）| circle=最小外接圆（正圆盘）。
-      // padding 跟随节点视觉半径（与节点绘制同口径 /√k）+ 10px 屏幕留白，避免大节点戳出圈外。
-      const themeShape = P.themeShape === 'circle' ? 'circle' : 'hull'
-      const themeGroups = new Map()
+      // 主题区域（v0.10.6 重做，替代 v0.10.5 的"全主题全局凸包"）：
+      // 教训：主题是**语义**分组，在力导向布局里往往弥散（实测 96 条成员的簇摊开半个画布），
+      // 直接给每个主题取全局凸包 → 一堆巨大多边形互相叠、把别家节点兜进来，观感"碎玻璃"。
+      // 现按 graphView.themeScope 分策略：
+      //   focus（默认）：只画**当前聚焦节点所属主题**的完整范围（悬停/选中即见，含全体成员）——零干扰、信息明确；
+      //   always：只给每个主题的**密集团**画（densityCore 滤掉链状稀疏末端，最多 8 片）；
+      //   off：不画。
+      // 形状 themeShape：hull 贴合凸包 / circle 最小外接圆；每帧按实时坐标重算 → 随主题中心移动。
+      const themeMode = P.themeScope === "always" ? "always" : (P.themeScope === "off" ? "off" : "focus")
+      const themeShape = P.themeShape === "circle" ? "circle" : "hull"
+      const themeGroupsAll = new Map()
       for (const n of nodes) {
         const t = n.theme
         if (!t || t === "(未归类)") continue
-        if (!themeGroups.has(t)) themeGroups.set(t, [])
-        themeGroups.get(t).push(n)
+        if (!themeGroupsAll.has(t)) themeGroupsAll.set(t, [])
+        themeGroupsAll.get(t).push(n)
       }
-      for (const [theme, members] of themeGroups) {
-        if (members.length < 3) continue
+      // 要画哪些主题：focus=当前聚焦节点所属主题；always=全部主题（限量）
+      const focusTheme = (() => {
+        const t = focusId ? nodeById.get(focusId)?.theme : null
+        return t && t !== "(未归类)" ? t : null
+      })()
+      const themesToDraw = themeMode === "always" ? [...themeGroupsAll.keys()] : (themeMode === "focus" && focusTheme ? [focusTheme] : [])
+      const showcase = []   // [{ theme, members, primary, total }]
+      if (themesToDraw.length > 0) {
+        frameNo++
+        refreshThemeScale(nodes.length, edges)
+        for (const theme of themesToDraw) {
+          const all = themeGroupsAll.get(theme) ?? []
+          if (all.length < 4) continue
+          // 主题是语义分组，空间上可能摊得很开（实测 45 条成员横跨半个画布）——
+          // 圈整团既不「贴合」也必然盖住别家，故只圈它的**密集团**（densityCore 滤掉链状稀疏末端）
+          for (const clump of clusterByDistance(all, clusterR, { minSize: 4 })) {
+            const core = densityCore(clump, { eps: coreEps, minNeighbors: 2, minSize: 4 })
+            if (core.length < 4) continue
+            showcase.push({ theme, members: core, primary: themeMode === "focus", total: all.length })
+          }
+        }
+        showcase.sort((a, b) => b.members.length - a.members.length)
+        if (themeMode === "always") showcase.length = Math.min(showcase.length, 8)
+      }
+      const themeLabels = []
+      let primaryLabeled = false
+      for (const r of showcase) {
         let maxNodeR = 0
-        for (const n of members) maxNodeR = Math.max(maxNodeR, (4 + Math.min(n.degree ?? 0, 14) * 0.55) / Math.sqrt(transform.k))
-        const bounds = themeBounds(members, { shape: themeShape, pad: maxNodeR + 10 / transform.k })
+        for (const n of r.members) maxNodeR = Math.max(maxNodeR, (4 + Math.min(n.degree ?? 0, 14) * 0.55) / Math.sqrt(transform.k))
+        const bounds = themeBounds(r.members, { shape: themeShape, pad: maxNodeR + 10 / transform.k })
         if (!bounds) continue
-        const base = pickColor(data.themes, theme, "note")
-        const m = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
-        const hue = m ? +m[1] : 200
-        const dimmed = focusIds && members.every((n) => !focusIds.has(n.id))
-        ctx.globalAlpha = (focusId ? (members.some((n) => n.id === focusId) ? 0.9 : 0.18) : 0.9)
-          * overallT * (dimmed ? 0.08 : 1)
+        const base = pickColor(data.themes, r.theme, "note")
+        const mm = /hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/.exec(base)
+        const hue = mm ? +mm[1] : 200
+        const dimmed = focusIds && r.members.every((n) => !focusIds.has(n.id))
+        // 层序（v0.10.6）：区域画到**边与节点之下**（destination-over）——否则半透明填充像彩色塑料膜
+        // 蒙住整张网络（v0.10.5 实拍"糊"感的一半来源）。放到底层后即成背景底色，网络仍清晰。
+        ctx.globalAlpha = (r.primary ? 0.95 : 0.7) * overallT * (dimmed ? 0.06 : 1)
         ctx.beginPath()
         if (bounds.kind === "hull") {
           const pts = bounds.points
@@ -332,21 +384,26 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         } else {
           ctx.arc(bounds.cx, bounds.cy, bounds.r, 0, Math.PI * 2)
         }
-        // 圆角接缝：外扩多边形顶点本身已贴合，不走顶点圆滑（那会切进节点），只柔化描边转角
-        ctx.lineJoin = "round"
-        ctx.fillStyle = `hsla(${hue},70%,60%,0.10)`
+        ctx.lineJoin = "round"   // 外扩多边形顶点本身已贴合，不走顶点圆滑（会切进节点），只柔化描边转角
+        ctx.globalCompositeOperation = "destination-over"
+        ctx.fillStyle = `hsla(${hue},70%,58%,${r.primary ? 0.14 : 0.10})`
         ctx.fill()
-        ctx.strokeStyle = `hsla(${hue},74%,65%,0.35)`
-        ctx.lineWidth = 1.2 / transform.k
+        ctx.globalCompositeOperation = "source-over"
+        ctx.strokeStyle = `hsla(${hue},74%,66%,${r.primary ? 0.5 : 0.28})`
+        ctx.lineWidth = (r.primary ? 1.5 : 1.1) / transform.k
         ctx.setLineDash([])
         ctx.stroke()
-        // 主题名标签（贴包围区顶部，随圈一起移动）
-        ctx.globalAlpha = (focusId ? (members.some((n) => n.id === focusId) ? 0.95 : 0.22) : 0.95)
-          * overallT * (dimmed ? 0.08 : 1)
-        ctx.font = `bold ${11 / transform.k}px sans-serif`
-        ctx.fillStyle = `hsla(${hue},70%,72%,0.9)`
-        ctx.textAlign = "center"
-        ctx.fillText(members.length + " · " + theme, bounds.cx, bounds.topY - 8 / transform.k)
+        // 聚焦主题：只给最大的那片贴标签（标"主题总数"而非片内数），其余片不刷屏
+        const isPrimaryLabel = r.primary && !primaryLabeled
+        if (isPrimaryLabel) primaryLabeled = true
+        themeLabels.push({
+          text: (isPrimaryLabel ? r.total : r.members.length) + " · " + r.theme,
+          x: bounds.cx,
+          y: bounds.topY - 8 / transform.k,
+          hue,
+          primary: isPrimaryLabel,
+          dimmed: !!dimmed,
+        })
       }
       ctx.setLineDash([])
       // 边 hover 标签（v0.9.11）：鼠标悬停边时显示类型（+权重）
@@ -434,6 +491,28 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           ctx.font = (10 / transform.k) + "px sans-serif"
           ctx.textAlign = "center"
           ctx.fillText(n.label.slice(0, 9), n.x, n.y + r + 11 / transform.k)
+        }
+      }
+      // 主题标签（v0.10.6）：画在**节点之上**（免得被节点盖住），带碰撞避让与"每主题 1 个"上限
+      if (themeLabels.length > 0) {
+        ctx.font = `bold ${11 / transform.k}px sans-serif`
+        ctx.textAlign = "center"
+        const placed = []
+        const perTheme = new Map()
+        for (const lb of themeLabels) {
+          const key = lb.text.replace(/^\d+ · /, "")
+          const cnt = perTheme.get(key) ?? 0
+          if (!lb.primary && cnt >= 1) continue
+          const tw = ctx.measureText(lb.text).width
+          const th = 13 / transform.k
+          const box = { minX: lb.x - tw / 2, maxX: lb.x + tw / 2, minY: lb.y - th, maxY: lb.y + th * 0.3 }
+          const hit = placed.some((b) => !(box.maxX < b.minX || box.minX > b.maxX || box.maxY < b.minY || box.minY > b.maxY))
+          if (hit && !lb.primary) continue
+          placed.push(box)
+          perTheme.set(key, cnt + 1)
+          ctx.globalAlpha = (lb.primary ? 1 : 0.85) * overallT * (lb.dimmed ? 0.1 : 1)
+          ctx.fillStyle = `hsla(${lb.hue},70%,${lb.primary ? 78 : 74}%,0.95)`
+          ctx.fillText(lb.text, lb.x, lb.y)
         }
       }
       ctx.globalAlpha = 1
@@ -630,8 +709,9 @@ function MemoryGraphView({ scope }) {
     repulsion: Number(gv.repulsion) || 1,
     damping: Number(gv.damping) || 0.3,
     gravity: Number(gv.gravity) || 0.005,   // || 而非 ??：Number(undefined)=NaN，NaN??x 仍是 NaN 会击穿力导向
-    themeShape: gv.themeShape === 'circle' ? 'circle' : 'hull',   // 主题圈形状（v0.10.5）
-  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity, gv.themeShape])
+    themeShape: gv.themeShape === 'circle' ? 'circle' : 'hull',   // 主题区域形状（v0.10.5）
+    themeScope: gv.themeScope === 'always' || gv.themeScope === 'off' ? gv.themeScope : 'focus',   // 显示策略（v0.10.6）
+  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity, gv.themeShape, gv.themeScope])
 
   const load = useCallback(() => {
     setError("")

@@ -200,6 +200,113 @@ export function minimalEnclosingCircle(points) {
 }
 
 /**
+ * 就地聚簇（单链 / union-find，门槛 = 欧氏距离）：把同主题成员按"谁挨着谁"拆成局部团。
+ *
+ * 为什么需要它（v0.10.6 教训）：同主题记忆在力导向布局里常散成好几坨、甚至绕场一周——
+ * 直接对全部成员取凸包，凸边会把中间大量**别家节点**一并兜进来（实测：96 条成员的簇糊住半个画布）。
+ * 先聚簇再各自取包围形状，才是"圈住这片相关的内容"而不是"圈住整块地图"。
+ *
+ * @param {{x:number,y:number}[]} points
+ * @param {number} threshold 邻居判定距离（世界坐标单位）
+ * @param {{minSize?:number}} opts 只返回成员数 ≥ minSize 的团（默认 1）
+ * @returns {{x:number,y:number}[][]}
+ */
+export function clusterByDistance(points, threshold, { minSize = 1 } = {}) {
+  const pts = (points ?? []).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y))
+  if (pts.length === 0) return []
+  const d = Number(threshold)
+  if (!Number.isFinite(d) || d <= 0) return pts.map((p) => [p])
+  const n = pts.length
+  const parent = new Array(n)
+  for (let i = 0; i < n; i++) parent[i] = i
+  const find = (i) => {
+    let r = i
+    while (parent[r] !== r) r = parent[r]
+    while (parent[i] !== r) { const nx = parent[i]; parent[i] = r; i = nx }
+    return r
+  }
+  const union = (a, b) => {
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) parent[ra] = rb
+  }
+  // 按 x 排序 + 窗口剪枝：只需比较 x 距离 < threshold 的点对（避免全 O(n²)）
+  const order = pts.map((p, i) => i).sort((a, b) => pts[a].x - pts[b].x)
+  const d2 = d * d
+  for (let i = 0; i < order.length; i++) {
+    const a = pts[order[i]]
+    for (let j = i + 1; j < order.length; j++) {
+      const b = pts[order[j]]
+      if (b.x - a.x > d) break
+      const dx = a.x - b.x
+      const dy = a.y - b.y
+      if (dx * dx + dy * dy <= d2) union(order[i], order[j])
+    }
+  }
+  const groups = new Map()
+  for (let i = 0; i < n; i++) {
+    const r = find(i)
+    if (!groups.has(r)) groups.set(r, [])
+    groups.get(r).push(pts[i])
+  }
+  const out = [...groups.values()].filter((g) => g.length >= Math.max(1, minSize))
+  // 确定性排序（成员多者在前，其次按左上角）——逐帧顺序稳定，绘制层叠不闪
+  out.sort((g1, g2) => g2.length - g1.length
+    || Math.min(...g1.map((p) => p.y)) - Math.min(...g2.map((p) => p.y))
+    || Math.min(...g1.map((p) => p.x)) - Math.min(...g2.map((p) => p.x)))
+  return out
+}
+
+/**
+ * 密度核心（v0.10.6）：只保留"身边有邻居"的成员，滤掉链状/条状的稀疏末端。
+ *
+ * 起因：单链聚簇会把**一串**彼此挨着、但整体拉得很长的同主题成员算作一团，其包围形状
+ * 会罩进大片空地（实测：圈半径 ~200px 却只有零星几个点）。
+ * 判据不能用"离圆心最远"——最小外接圆的边界点永远最远，等于每次都在剔点。
+ * 改用密度：邻居数 ≥ minNeighbors（半径 eps 内）才算核心成员；核心不足 minSize → 返回空，
+ * 调用方据此**不画**该区域（稀疏同主题本就成不了"一片区域"）。离群点仍以彩色节点显示。
+ *
+ * @param {{x:number,y:number}[]} points
+ * @param {{eps?:number, minNeighbors?:number, minSize?:number}} opts
+ *   eps 邻居判定半径（默认 1）；minNeighbors 核心所需邻居数（默认 2）；minSize 核心最小成员数（默认 3）
+ * @returns {{x:number,y:number}[]} 核心成员；不足 minSize 时返回空数组
+ */
+export function densityCore(points, { eps = 1, minNeighbors = 2, minSize = 3 } = {}) {
+  const pts = (points ?? []).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y))
+  const need = Math.max(1, Math.floor(minSize))
+  if (pts.length < need) return []
+  const e = Number(eps)
+  if (!Number.isFinite(e) || e <= 0) return pts.slice(0, pts.length)
+  const e2 = e * e
+  const keep = []
+  for (let i = 0; i < pts.length; i++) {
+    let n = 0
+    for (let j = 0; j < pts.length; j++) {
+      if (i === j) continue
+      const dx = pts[i].x - pts[j].x
+      const dy = pts[i].y - pts[j].y
+      if (dx * dx + dy * dy <= e2) {
+        n++
+        if (n >= minNeighbors) break
+      }
+    }
+    if (n >= minNeighbors) keep.push(pts[i])
+  }
+  return keep.length >= need ? keep : []
+}
+
+/** 包围形状的外接矩形（world 坐标）：用于控件裁剪/碰撞与"过散不画"判定。 */
+export function boundsBox(bounds) {
+  if (!bounds) return null
+  if (bounds.kind === 'circle') {
+    return { minX: bounds.cx - bounds.r, minY: bounds.cy - bounds.r, maxX: bounds.cx + bounds.r, maxY: bounds.cy + bounds.r }
+  }
+  const xs = bounds.points.map((p) => p.x)
+  const ys = bounds.points.map((p) => p.y)
+  return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }
+}
+
+/**
  * 主题范围统一入口：给一组成员（含实时世界坐标 x/y）算出贴合的形状。
  * 每帧调用即为"随主题中心/组形移动"。
  * @param {{x:number,y:number}[]} members
