@@ -230,6 +230,12 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
 
     const k = Math.sqrt((W() * H()) / Math.max(nodes.length, 1))
     const maxDeg = Math.max(...nodes.map((n) => n.degree), 1)
+    /** 节点世界半径（v0.10.11：**不随缩放变化**的布局常量）。原式带了 /√k：
+     *  半径随缩放漂移 → "节点不重合"无法成为布局约束（放大就重叠），观感也会忽大忽小。
+     *  现在半径是布局空间常量，配合下面的碰撞规避给出硬保证：任何缩放倍率下都不重合。 */
+    const nodeRadiusOf = (n) => 5 + Math.min(n?.degree ?? 0, 14) * 0.7
+    const COLLIDE_GAP = 6        // 节点之间的最小空隙（世界坐标）
+    const collideCell = 2 * nodeRadiusOf({ degree: 14 }) + COLLIDE_GAP
     let dragNode = null
     // 拖动作用域（v0.10.10）：拖动只影响图距离 ≤2 的邻域——范围外节点冻结，
     // 避免"拖一个节点导致全局扰动"（用户实拍反馈）。
@@ -288,7 +294,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           // 拖动期间斥力减半：跟随交给弹簧，斥力只做让位——防团内连锁推挤振荡
           // 无连接节点之间允许靠得更近（v0.10.10）：它们没有结构关系，挤一点无妨 —— 收紧"噪声光环"
           const isoPair = a.degree === 0 && b.degree === 0
-          const f = Math.min((k * k) / dd, k * 0.6) * alpha * P.repulsion * (dragNode ? 0.45 : 1) * (isoPair ? 0.35 : 1)
+          const f = Math.min((k * k) / dd, k * 0.6) * alpha * P.repulsion * (dragNode ? 0.45 : 1) * (isoPair ? 0.7 : 1)
           a.vx += (dx / d) * f; a.vy += (dy / d) * f
           b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
         }
@@ -327,6 +333,41 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         }
         n.vx *= damp; n.vy *= damp
         n.x += n.vx * 1.5; n.y += n.vy * 1.5
+      }
+      // 碰撞规避（v0.10.11）：节点**不得重合**——位置式硬约束（网格加速，O(n)）。
+      // 力（斥力/弹簧/引力）负责"自然布局"，这一步只负责兜底"物理上不重叠"，
+      // 两者配合 = 用户要的"各自引斥力平衡 + 不重合"。
+      const grid = new Map()
+      for (const n of nodes) {
+        const key = Math.floor(n.x / collideCell) + ',' + Math.floor(n.y / collideCell)
+        const arr = grid.get(key)
+        if (arr) arr.push(n)
+        else grid.set(key, [n])
+      }
+      for (const n of nodes) {
+        const gx0 = Math.floor(n.x / collideCell), gy0 = Math.floor(n.y / collideCell)
+        const frozenN = dragNode && n !== dragNode && !dragScope.has(n.id)
+        for (let gx = gx0 - 1; gx <= gx0 + 1; gx++) {
+          for (let gy = gy0 - 1; gy <= gy0 + 1; gy++) {
+            const arr = grid.get(gx + ',' + gy)
+            if (!arr) continue
+            for (const m of arr) {
+              if (m === n || m.id <= n.id) continue     // 每对只处理一次（id 比较，稳定）
+              const minD = nodeRadiusOf(n) + nodeRadiusOf(m) + COLLIDE_GAP
+              let dx = m.x - n.x, dy = m.y - n.y
+              let d2 = dx * dx + dy * dy
+              if (d2 >= minD * minD) continue
+              let d = Math.sqrt(d2)
+              if (d < 1e-6) { dx = hash01(n.id) - 0.5; dy = hash01(m.id) - 0.5; d = Math.hypot(dx, dy) || 1 }
+              const push = (minD - d) * 0.5 * 0.8       // 各推一半、留 20% 欠松弛：既快速分离又不抖
+              const ux = dx / d, uy = dy / d
+              const frozenM = dragNode && m !== dragNode && !dragScope.has(m.id)
+              if (!frozenN) { n.x -= ux * push; n.y -= uy * push }
+              if (!frozenM) { m.x += ux * push; m.y += uy * push }
+              if (n !== dragNode && m !== dragNode) { n.vx *= 0.6; n.vy *= 0.6; m.vx *= 0.6; m.vy *= 0.6 }
+            }
+          }
+        }
       }
     }
 
@@ -514,7 +555,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         // 实时物理有 0.02 的活跃度地板，节点一直在微动，而凸包顶点会把单点微动放大成外轮廓呼吸
         // （用户实拍："多面圈不断扩大缩小"）——指数滤波把这种抖动抹平。
         let maxNodeR = 0
-        for (const n of r.members) maxNodeR = Math.max(maxNodeR, (4 + Math.min(n.degree ?? 0, 14) * 0.55) / Math.sqrt(transform.k))
+        for (const n of r.members) maxNodeR = Math.max(maxNodeR, nodeRadiusOf(n))
         const pad = maxNodeR + 10 / transform.k
         let raw
         if (themeShape === "hull" && r.pinnedIds && r.pinnedIds.length >= 3) {
@@ -629,7 +670,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         if (ease <= 0.001) continue
         ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 1) * ease * (dimmed ? 0.12 : 1)
         ctx.beginPath()
-        const r = (4 + Math.min(n.degree, 14) * 0.55) / Math.sqrt(transform.k) * ease
+        const r = nodeRadiusOf(n) * ease
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
         ctx.fillStyle = n.color
         ctx.fill()
@@ -746,7 +787,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     }
     const hitTest = (mx, my) => {
       const wx = (mx - transform.x) / transform.k, wy = (my - transform.y) / transform.k
-      let best = null, bestD = (14 * 14) / (transform.k * transform.k)
+      let best = null, bestD = (nodeRadiusOf({ degree: 14 }) + 8) ** 2   // 世界空间常量（v0.10.11）
       for (const n of nodes) {
         const dx = n.x - wx, dy = n.y - wy
         const d2 = dx * dx + dy * dy
