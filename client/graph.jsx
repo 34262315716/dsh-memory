@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { themeBounds, clusterByDistance, densityCore, convexHull, padConvexPolygon, polygonContains } from './graph-geometry.js'
 import { layoutSignature, loadLayout, saveLayout, restoredRatio } from './layout-cache.js'
+import { resolveLayoutPlan, progressLabel } from './layout-policy.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
  *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
 function themePalette(n) {
@@ -132,6 +133,8 @@ function layoutNodes(data, W, H) {
  */
 const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef, themeFocusRef }) {
   const canvasRef = useRef(null)
+  // 布局收敛进度（v0.10.13）：非 null 时显示覆盖层（"先算到所有点不动再展示"）
+  const [progress, setProgress] = useState(null)
   const hoverRef = useRef(null)
   const hoverEdgeRef = useRef(null)
 
@@ -204,6 +207,8 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     //  弹簧：目标长度度感知（枢纽节点周围留更大空间）+ 强度 0.07（更紧）
     //  中心引力：0.005 线性（孤立节点回归中心；被拖拽节点豁免）
     let alpha = 0.45, raf = 0   // 初始 α 调低：首帧运动更温和（配合预热，打开即稳定全景）
+    let alive = true            // 组件存活标记（分块收敛的 rAF 退出用）
+    let converge = 0            // 收敛阶段的 rAF id
     // 主题区域聚簇态（v0.10.6）：自适应门槛缓存 + 帧计数（避免逐帧重算中位边长的开销与抖动）
     let clusterR = 0
     let coreEps = 0
@@ -414,30 +419,8 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       transform.y = (H() - bh * transform.k) / 2 - minY * transform.k
     }
 
-    // ---- 打开动画：预热模拟 → 立即全景 → 从中心向两边平滑显现 ----
-    // 1) 预热（v0.10.7）：
-    //    - 命中缓存（≥85% 节点有旧坐标）：坐标已是上次收敛态 → 只做几步微松弛，打开即"全局平衡"；
-    //    - 未命中：把力导向**跑到收敛**（alpha ≤ 0.003，上限 2500 步）再落盘 —— 等于"把平衡跑在打开之前"。
-    let warm = 0
-    if (restoreOk) {
-      alpha = 0.02
-      for (let i = 0; i < 24; i++) step()
-    } else {
-      // 收敛策略（v0.10.10 修正，两段式）：
-      // 原实现让 `step()` 衰减 alpha —— 速度变小只是因为"力被 alpha 杀死了"，布局远未平衡，
-      // 于是把"环形初位 + 一点扰动"当成平衡冻进缓存（用户实拍：节点像按顺序排在同心的圈上）。
-      // 物理事实：平衡位置与 alpha 无关（所有力同倍缩放），alpha 只决定步长。
-      // 故：① 大步快铺（固定 0.45）把结构铺开；② 慢衰减收尾（×0.985/步）让布局真正落到力平衡。
-      // 实测（真实快照 490 节点）：800 步 / 约 250ms，一次收敛后落盘，后续打开直接复用。
-      for (let i = 0; i < 400; i++) { step(0.45); warm++ }
-      for (let i = 0; i < 400; i++) { step(0.45 * Math.pow(0.985, i + 1)); warm++ }
-      alpha = 0.15   // 交给实时循环继续缓慢律动（而不是从 0.45 猛冲）
-      saveLayout(sig, nodes)
-    }
-    // 2) 立即全景（不再等模拟收敛后才跳变缩放）
-    fitToView()
-    // 3) 显现动画参数：节点按距视口中心距离延迟淡入+放大（中心先亮，向两边扩散）
-    const bornAt = performance.now()
+    // ---- 展开动画参数（v0.10.13：bornAt 在"真正展示"那一刻才打点）----
+    let bornAt = 0
     const revealMs = 700
     const cx0 = W() / 2, cy0 = H() / 2
     let maxDist = 1
@@ -772,7 +755,52 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       draw()
       // 布局落盘（v0.10.7）：每 ~5s 存一次当前收敛坐标，供下次打开直接落位
       if (++persistTick % 300 === 0) saveLayout(sig, nodes)
-      raf = requestAnimationFrame(loop)
+      // ---- 展示门（v0.10.13）----
+    // 用户诉求：① 进来先把布局算到"所有点都不动"再展示；② 大图/弱机按计划降档。
+    // 缓存命中 → 坐标已是收敛态，微松弛后直接展示（零等待）；否则分块收敛（每帧 ≤12ms，UI 不卡）。
+    const plan = resolveLayoutPlan({ quality: P.layoutQuality, nodeCount: nodes.length, hasCache: restoreOk })
+    const maxSpeed = () => {
+      let m = 0
+      for (const n of nodes) {
+        const v = Math.abs(n.vx) + Math.abs(n.vy)
+        if (v > m) m = v
+      }
+      return m
+    }
+    const revealNow = () => {
+      alpha = 0.15              // 交给实时循环继续缓慢律动（而不是从大步长猛冲）
+      saveLayout(sig, nodes)    // 收敛结果落盘：下次打开直接复用
+      setProgress(null)
+      fitToView()
+      bornAt = performance.now()
+      if (!raf) raf = requestAnimationFrame(loop)
+    }
+    if (restoreOk || !plan.compute) {
+      alpha = 0.02
+      for (let i = 0; i < 24; i++) step()
+      revealNow()
+    } else {
+      // 两段式：前 400 步固定 alpha 快铺，之后 ×0.985/步 慢衰减收尾（平衡位置与 alpha 无关）
+      const t0 = performance.now()
+      let step0 = 0
+      const note = plan.downgraded ? plan.reason : ''
+      const tick = () => {
+        if (!alive) return
+        const deadline = performance.now() + 12
+        while (performance.now() < deadline && step0 < plan.stepCap) {
+          step(step0 < 400 ? 0.45 : 0.45 * Math.pow(0.985, step0 - 400 + 1))
+          step0++
+          if (step0 > 400 && step0 % 20 === 0 && maxSpeed() < plan.stopSpeed) break
+        }
+        const converged = step0 > 400 && maxSpeed() < plan.stopSpeed
+        const exhausted = step0 >= plan.stepCap || performance.now() - t0 > plan.budgetMs
+        setProgress({ text: progressLabel(plan, step0, maxSpeed()), pct: Math.min(99, Math.round((step0 / Math.max(1, plan.stepCap)) * 100)), note })
+        if (converged || exhausted) revealNow()
+        else converge = requestAnimationFrame(tick)
+      }
+      setProgress({ text: progressLabel(plan, 0), pct: 0, note })
+      converge = requestAnimationFrame(tick)
+    }
     }
     raf = requestAnimationFrame(loop)
 
@@ -807,7 +835,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       moved = false
       const [mx, my] = getPos(ev)
       const n = hitTest(mx, my)
-      if (n) { dragNode = n; setDragScope(n); heat(0.35); if (!raf) raf = requestAnimationFrame(loop) }
+      if (n) { dragNode = n; setDragScope(n); heat(0.35); if (!raf && bornAt > 0) raf = requestAnimationFrame(loop) }
       else panStart = { x: ev.clientX, y: ev.clientY, tx: transform.x, ty: transform.y }
     }
     const onMove = (ev) => {
@@ -817,7 +845,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         dragNode.x = (mx - transform.x) / transform.k
         dragNode.y = (my - transform.y) / transform.k
         // 兜底：拖动中循环若意外停止，立即重启（防画面冻结）
-        if (!raf) raf = requestAnimationFrame(loop)
+        if (!raf && bornAt > 0) raf = requestAnimationFrame(loop)
       } else if (panStart) {
         transform.x = panStart.tx + (ev.clientX - panStart.x)
         transform.y = panStart.ty + (ev.clientY - panStart.y)
@@ -866,6 +894,8 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     canvas.addEventListener("wheel", onWheel, { passive: false })
 
     return () => {
+      alive = false
+      if (converge) cancelAnimationFrame(converge)
       saveLayout(sig, nodes)   // 关闭面板时落盘当前收敛布局（v0.10.7）
       cancelAnimationFrame(raf)
       drawRef.current = null
@@ -878,7 +908,20 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     }
   }, [data, onSelect, selectedRef, drawRef, physics])
 
-  return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block", cursor: "grab" }} />
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block", cursor: "grab" }} />
+      {progress ? (
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(18,18,22,0.75)", color: "#ddd", zIndex: 5 }}>
+          <div style={{ fontSize: 13 }}>{progress.text}</div>
+          <div style={{ width: 260, height: 6, borderRadius: 3, background: "#333", overflow: "hidden" }}>
+            <div style={{ width: progress.pct + "%", height: "100%", background: "#5b9bd5", transition: "width .12s linear" }} />
+          </div>
+          {progress.note ? <div style={{ fontSize: 11, color: "#888" }}>{progress.note}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  )
 })
 
 /** 详情面板（memo：仅选中变化时重渲染）。 */
@@ -958,7 +1001,8 @@ function MemoryGraphView({ scope }) {
     gravity: Number(gv.gravity) || 0.005,   // || 而非 ??：Number(undefined)=NaN，NaN??x 仍是 NaN 会击穿力导向
     themeShape: gv.themeShape === 'hull' ? 'hull' : 'circle',   // 主题区域形状（v0.10.8：默认圆形，轮廓连续不抖）
     themeScope: gv.themeScope === 'always' || gv.themeScope === 'off' ? gv.themeScope : 'focus',   // 显示策略（v0.10.6）
-  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity, gv.themeShape, gv.themeScope])
+    layoutQuality: gv.layoutQuality === 'balanced' || gv.layoutQuality === 'instant' ? gv.layoutQuality : 'precise',   // 布局质量（v0.10.13）
+  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity, gv.themeShape, gv.themeScope, gv.layoutQuality])
 
   const load = useCallback(() => {
     setError("")

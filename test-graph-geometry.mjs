@@ -2,6 +2,7 @@
 // 用法: node test-graph-geometry.mjs（纯函数，无需部署副本环境）
 import { convexHull, padConvexPolygon, polygonContains, minimalEnclosingCircle, circleContains, themeBounds, clusterByDistance, boundsBox, densityCore } from './client/graph-geometry.js'
 import { encodeLayout, decodeLayout, restoredRatio, layoutSignature } from './client/layout-cache.js'
+import { resolveLayoutPlan, progressLabel, STOP_SPEED } from './client/layout-policy.js'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
@@ -189,6 +190,26 @@ console.log('== 7. layout-cache：布局落盘 / 按 id 复用（v0.10.7） ====
   check('兼容早期数组格式', decodeLayout('[["a",1,2]]')?.map.get('a')[0] === 1)
   check('签名对拓扑变化敏感、对顺序不敏感', layoutSignature({ nodes: [{ id: 'a' }, { id: 'b' }], edges: [] }) === layoutSignature({ nodes: [{ id: 'b' }, { id: 'a' }], edges: [] }))
   check('边数变化 → 签名变化', layoutSignature({ nodes: [{ id: 'a' }], edges: [] }) !== layoutSignature({ nodes: [{ id: 'a' }], edges: [1] }))
+}
+
+console.log('== 8. layout-policy：布局质量档位与自动降档（v0.10.13） ============')
+{
+  const prec = resolveLayoutPlan({ quality: 'precise', nodeCount: 100 })
+  check('precise：重算 + 预算 4s / 8000 步', prec.compute && prec.budgetMs === 4000 && prec.stepCap === 8000 && !prec.downgraded)
+  const bal = resolveLayoutPlan({ quality: 'balanced', nodeCount: 100 })
+  check('balanced：预算 1.2s / 3000 步', bal.compute && bal.budgetMs === 1200 && bal.stepCap === 3000)
+  const inst = resolveLayoutPlan({ quality: 'instant', nodeCount: 100 })
+  check('instant：不重算', !inst.compute && inst.budgetMs === 0)
+  check('非法质量值回落 precise', resolveLayoutPlan({ quality: 'weird', nodeCount: 10 }).mode === 'precise')
+  const big = resolveLayoutPlan({ quality: 'precise', nodeCount: 1200 })
+  check('大图（>900）precise 自动降到 balanced + 标记', big.mode === 'balanced' && big.downgraded && big.reason.includes('900'))
+  const huge = resolveLayoutPlan({ quality: 'precise', nodeCount: 2500, hasCache: true })
+  check('超大图（>1800）+ 有缓存 → instant（直接用缓存）', huge.mode === 'instant' && !huge.compute && huge.downgraded)
+  const hugeNoCache = resolveLayoutPlan({ quality: 'balanced', nodeCount: 2500, hasCache: false })
+  check('超大图 + 无缓存 → balanced（仍算但限时）', hugeNoCache.mode === 'balanced' && hugeNoCache.compute)
+  check('速度阈值导出为常量', STOP_SPEED > 0 && STOP_SPEED < 0.1)
+  check('进度文案含百分比与残余速度', progressLabel(prec, 4000, 0.5).includes('%') && progressLabel(prec, 4000, 0.5).includes('0.50'))
+  check('instant 的进度文案说明直接展示', progressLabel(inst, 0, 0).includes('缓存'))
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

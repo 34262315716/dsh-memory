@@ -423,7 +423,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       }
       {/* graphView 整体 */}
       const gvKeys = GRAPH_VIEW_FIELDS.map(([f]) => f)
-      if (gvKeys.some((f) => drafts[`graphView.${f}`] !== undefined) || drafts['graphView.themeShape'] !== undefined || drafts['graphView.themeScope'] !== undefined) {
+      if (gvKeys.some((f) => drafts[`graphView.${f}`] !== undefined) || drafts['graphView.themeShape'] !== undefined || drafts['graphView.themeScope'] !== undefined || drafts['graphView.layoutQuality'] !== undefined) {
         const next = { ...graphView }
         for (const [f] of GRAPH_VIEW_FIELDS) {
           const v = drafts[`graphView.${f}`]
@@ -432,6 +432,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         // themeShape/themeScope 是字符串枚举（hull|circle / focus|always|off）——不走 NUMERIC_SUB 的 Number 分支
         if (drafts['graphView.themeShape'] !== undefined) next.themeShape = String(drafts['graphView.themeShape'])
         if (drafts['graphView.themeScope'] !== undefined) next.themeScope = String(drafts['graphView.themeScope'])
+        if (drafts['graphView.layoutQuality'] !== undefined) next.layoutQuality = String(drafts['graphView.layoutQuality'])
         await scope.set('graphView', next)
       }
       {/* housekeeping 整体 */}
@@ -797,6 +798,18 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         <p style={{ margin: '0 0 4px', color: '#888', fontSize: 12 }}>
           打开「记忆图谱」面板时读取；改动后重开面板生效。
         </p>
+        <Field label="布局质量" hint="精确=一直算到所有点都不动再展示（默认，预算 4s）| 均衡=限时 1.2s 出图 | 极速=不重算，直接用上次缓存/初始布局。节点数超 900/1800 会自动降档">
+          <select
+            style={inputStyle}
+            value={drafts['graphView.layoutQuality'] ?? graphView.layoutQuality ?? 'precise'}
+            disabled={!writable}
+            onChange={(e) => setText('graphView', 'layoutQuality', e.target.value)}
+          >
+            <option value="precise">精确（算到静止再展示）</option>
+            <option value="balanced">均衡（限时 1.2s）</option>
+            <option value="instant">极速（不重算）</option>
+          </select>
+        </Field>
         <Field label="主题圈显示" hint="聚焦时=只在悬停/选中节点时显示它所属主题的完整范围（默认，零干扰）| 常显=为每个主题的密集团画圈（滤掉稀疏末端，最多 8 片）| 关闭=不画">
           <select
             style={inputStyle}
