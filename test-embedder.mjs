@@ -47,16 +47,38 @@ check('rerank 对象存在即创建 reranker（不带 enabled 字段）', svcR.r
 const svc0 = await createEmbeddingServices({ provider: 'rule' }, { fetchImpl: mockRerankFetch })
 check('rerank 缺省不创建 reranker', svc0.reranker === null)
 
-// 5. 真实硅基流动 API（凭据文件读密钥；兼容 refs 嵌套缩进——修复前顶格匹配恒 undefined 致本测试静默跳过）
+// 5. 真实 API：验的是「当前配置的那个模型」，不是写死的老模型
+//    （v0.11.1：此前硬编码 Qwen3-VL-Embedding-8B，换了模型这行还在测旧的）
+const DEFAULT_EMB_MODEL = 'Qwen/Qwen3-Embedding-8B'
+/** 从 settings.yaml 的 memory.embedding.model 读当前配置；读不到回落默认。 */
+function configuredEmbedModel() {
+  try {
+    const yml = readFileSync(join(homedir(), '.dsh', 'settings.yaml'), 'utf8')
+    const mem = yml.match(/^memory:\n([\s\S]*?)(?=^\S|$)/m)?.[1] ?? ''
+    const emb = mem.match(/^  embedding:\n([\s\S]*?)(?=^  \S|$)/m)?.[1] ?? ''
+    return emb.match(/^\s+model:\s*(\S+)/m)?.[1] ?? DEFAULT_EMB_MODEL
+  } catch { return DEFAULT_EMB_MODEL }
+}
+
+// 凭据文件读密钥（兼容 refs 嵌套缩进——修复前顶格匹配恒 undefined 致本测试静默跳过）
 const cred = readFileSync(join(homedir(), '.dsh', '.credentials.yaml'), 'utf8')
 const key = (cred.match(/^\s*MEMORY_EMBEDDING_API_KEY:\s*(\S+)/m) ?? [])[1]
-if (key) {
+if (!key) {
+  console.log('  ⚠ 跳过真实 API 检查：凭据文件里没有 MEMORY_EMBEDDING_API_KEY')
+} else {
+  const model = configuredEmbedModel()
   try {
-    const real = new RemoteEmbedder({ baseUrl: 'https://api.siliconflow.cn/v1', apiKey: key, model: 'Qwen/Qwen3-VL-Embedding-8B' })
+    const real = new RemoteEmbedder({ baseUrl: 'https://api.siliconflow.cn/v1', apiKey: key, model })
     const rv = await real.embed(['SQLite 向量检索', '今天天气很好'])
-    check('真实 API：4096 维 + 相似文本余弦 > 无关', rv[0].length === 4096 && cosine(rv[0], rv[0]) > 0.99)
-    check('真实 API：dim 自动学习', real.dim === 4096)
-  } catch (e) { fail++; console.log('  ❌ 真实 API: ' + e.message.slice(0, 100)) }
+    console.log(`  · 真实 API：${model} → ${rv[0].length} 维`)
+    check('真实 API：返回向量且 dim 自动学习一致', rv[0].length > 0 && real.dim === rv[0].length)
+    check('真实 API：自身余弦 ≈ 1（向量可用）', cosine(rv[0], rv[0]) > 0.99)
+  } catch (e) {
+    // 402 = 账户余额不足。这不是"测试环境问题"——嵌入真的在降级 rule，向量路已瘫。
+    fail++
+    console.log('  ❌ 真实 API: ' + e.message.slice(0, 140)
+      + (/402|balance/.test(e.message) ? '  ← 余额不足：嵌入会降级 rule 哈希（自检 /dsh-memory/health 同款结论）' : ''))
+  }
 }
 
 // 6. RemoteReranker LRU 缓存：同 (query, doc) 命中缓存，不再发请求

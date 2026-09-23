@@ -25,9 +25,11 @@
 - **例外（启动时固化，改后必须重启 EAC/dsh web）**：
   - `dbFile`（数据库路径）
   - `embedding.*`（嵌入模型：provider/model/baseUrl/apiKeyEnv/cacheSize）
-  - `reranker.*`（模型端点类参数）
+  - `reranker.*`（模型端点类参数，含 topK/minCandidates/rrfWeight）
   - `enabled`（开关）
+  - `maxVersionsPerMemory`、`features.time`（store 构造期固化）
 - 原因：embedder/reranker/store 在 `apply()` 时一次性初始化（`lib/index.js` 70-83 行），之后只读。
+- 改完不确定生效没？面板顶部「连通性自检」按钮（`GET /dsh-memory/health?llm=1`）对嵌入/重排/提取各发一次真实最小请求，并报出向量路实况（谁在算向量、几维、多少条、是否降级）——**「● 已配置」只说明凭据文件里有键，不说明能用**（2026-09-17 事故：硅基流动余额 402 → 嵌入静默降级 rule、向量路停摆，界面上一切正常）。
 
 ---
 
@@ -42,7 +44,8 @@
 | `scope` | `''` | string | 留空 = global；可收窄到工作目录名 |
 | `injectMaxTokens` | `800` | 100–4000 | 每次自动注入 token 预算 |
 | `injectMinScore` | `0.02` | 0–1 | 注入最低相关分（RRF 量纲：0.02 ≈ 至少一路排前 10）。**想更少打扰调大到 0.05** |
-| `stepInterval` | `10` | 1–10 | 每 N 步全量重检索（步距按 agent 会话真实步数计；到点必检，同 query 也重检，重复注入由内容 hash 去抖） |
+| `injectPace` | `steady` | aggressive/steady/lazy/custom | **注入节奏档位（v0.11.2）**：激进=每 4 步、平稳=每 12 步、懒惰=每 30 步重检索一次；custom=用 `stepInterval`。取值经 `lib/config.js` 的 `resolveStepInterval()` 解析，写错档位回落「平稳」不报错 |
+| `stepInterval` | `10` | 1–60 | **仅 `injectPace=custom` 时生效**：每 N 步全量重检索（步距按 agent 会话真实步数计；到点必检，同 query 也重检，重复注入由内容 hash 去抖）。上限 v0.11.2 由 10 放宽到 60 |
 | `maxRecentPerAgent` | `6` | 1–50 | 每个 agent 最近注入窗口（防循环） |
 | `maxVersionsPerMemory` | `8` | 1–50 | 每条记忆世界线版本数 |
 
@@ -66,10 +69,13 @@
 | `provider` | `opencode-go` | **当前为 `deepseek-official`**（商务模型路由） |
 | `model` | `deepseek-v4-flash` | 提取模型 |
 | `apiKeyEnv` | `MEMORY_REFINER_API_KEY` | 凭据文件 `~/.dsh/.credentials.yaml` 中的键名，**只读键名不读值** |
-| `reasoningEffort` | `off` | **v0.9.25 新增**。推理档位：`off` 关思维链直出 JSON。推理档会先输出大段 reasoning，把 `maxTokens` 吃光 → 正文空/截断 → 蒸馏 100% 失败（此前已持续多日，日志 `Unexpected end of JSON input`） |
-| `maxTokens` | `1200` | 提取输出上限（v0.9.25 由 800 上调，配合关推理） |
+| `reasoningEffort` | `low` | **v0.12.0 默认由 `off` 改为 `low`**。`low/medium/high` = 明确思考档（提取质量优先）。**注意 `off` 不等于关思考**：pi-ai 适配器把 `off` 翻译成「省略 reasoning 参数」，于是由上游模型默认决定——思考型模型（如 `deepseek-v4.1-flash`）照样思考，实测把 800 token 预算吃满、正文 0 字 |
+| `maxTokens` | `0` | **v0.12.0 语义变更：`0` = 不限制（默认，不传该参数）**。不设上限时思考想多久都行，约束只剩时间预算；只有需要硬性限长时才填正数 |
+| `timeBudgetMs` | `120000` | **v0.12.0 新增**。单次调用时间预算（毫秒）：到点主动掐断，把**已写出的内容**带回去续跑（断点续思）。`0` = 不限时 |
+| `maxContinuations` | `3` | **v0.12.0 新增**。续跑轮数上限；某次续跑一个字都没写出来会立即停止，不空烧配额 |
 
-> ~~已知问题~~ **v0.9.25 已修复**：refiner 返回空/截断 JSON（日志 `LLM 提取失败，降级规则路径: Unexpected end of JSON input`）的根因 = 推理档位吞 maxTokens；现已默认 `reasoningEffort: off` + `maxTokens: 1200`，重启后应恢复 LLM 提取。
+> **v0.12.0 起不再有"推理吞预算"这一类故障**：不设 token 上限 + 时间预算兜底 + 掐断后续跑，无论上游换成什么模型、思考多长，提取都不会因为"预算不够"而整条丢失。
+> 历史留痕：v0.9.25 用「显式传 off」压过一次同源事故（当时模型是 `deepseek-v4-flash`），2026-09-16 换成默认强制思考的 `deepseek-v4.1-flash` 后立刻复发（`write.refined` 归零、`write.fallback` 累计 281 次），详见 CHANGELOG v0.12.0。
 
 ### 3.4 `embedding`（嵌入，改后重启）
 
@@ -81,14 +87,16 @@
 | `apiKeyEnv` | `MEMORY_EMBEDDING_API_KEY` | 密钥键名 |
 | `cacheSize` | `1024` | 64–8192 |
 
-> 本机现状：未配置 embedding 密钥 → 日志 `已降级到 rule embedder`（dim 256，离线可用）。
+> 本机现状（2026-09-17）：密钥已配置（硅基流动），但账户**余额不足（HTTP 402）** → 每次启动都落 `已降级到 rule embedder`（dim 256，离线可用），向量表也因此被迁移成 256 维。目标配置为 `Qwen/Qwen3-Embedding-8B`（纯文本嵌入，4096 维）；充值后重启即自动重建向量表并全量重嵌入。
+>
+> 百炼端点可作为备选：实测 `qwen3.7-text-embedding` 可用（1024 维，`baseUrl` 填百炼 compatible-mode 端点 + `apiKeyEnv: ALI_BAILIAN_API_KEY`）；该端点 `/rerank` 返回 404，重排需留在硅基流动或另找服务。
 
 ### 3.5 `reranker`（精排，改后重启）
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `false` | **当前用户已开 true** |
-| `provider` / `model` | `remote` / `Qwen/Qwen3-VL-Reranker-8B` | |
+| `provider` / `model` | `remote` / `Qwen/Qwen3-Reranker-8B`（本机已切换；schema 默认仍是 VL 版） | |
 | `baseUrl` | `''` | 留空 = 跟随嵌入端点 |
 | `apiKeyEnv` | `MEMORY_RERANK_API_KEY` | |
 | `topK` / `minCandidates` / `rrfWeight` | `20` / `3` / `0.7` | 精排候选数 / 候选不足不重排 / final = w×RRF + (1-w)×重排分 |
@@ -102,15 +110,29 @@
 | `damping` | `0.3` | 0.05–0.9 |
 | `gravity` | `0.005` | 0–0.05 |
 
-### 3.7 `housekeeping`（管家自动巡检，只读报告）
+### 3.7 `housekeeping`（管家：v0.12.1 起真治理）
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `enabled` | `true` | |
+| `enabled` | `true` | 管家总开关 |
 | `interval` | `20` | 每沉淀 N 条记忆巡检一次（5–500） |
 | `maxIntervalHours` | `24` | 时间兜底（1–720） |
-| `dedupThreshold` | `0.92` | 近重复合并阈值（0.8–0.99） |
+| `dedupThreshold` | `0.92` | 近重复扫描阈值（0.8–0.99） |
 | `agingDays` | `30` | 老化报告天数（7–365） |
+| `autoApply` | `true` | **v0.12.1 新增**。真治理开关：开启后巡检动手（近乎重复择优保留一条、其余归档；陈旧情景快照归档）；`false` = 退回只报告。**所有动作只归档不删除**，`memory_archive` 可查看与恢复 |
+| `autoMergeThreshold` | `0.95` | **v0.12.1 新增**。近乎重复的自动合并阈值；0.92~此值之间的相似记忆留给 LLM 归并（直接合并会丢信息） |
+| `archiveEpAfterDays` | `45` | **v0.12.1 新增**。情景快照（ep）闲置多少天后归档（0 = 不归档）。判据含「从未被检索命中」与「强度 < 1.5」，被用过的不动 |
+
+> 注意「归档」与「删除」的区别：归档的记忆**退出检索与注入**，但数据、世界线版本链、图谱边全部保留，随时可恢复。`memory_stats` 也把活跃与归档分开报（`memories` 只算活跃，`archived` 单列）。
+
+### 3.7b `sessionSummary`（会话级汇总，v0.12.2）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | `true` | 会话级汇总开关 |
+| `rounds` | `12` | 累积多少轮对话后汇总一次（5–100） |
+
+> 与逐轮提取的分工：逐轮提取记"这一轮发生了什么"，会话级汇总记"**整段会话最后落在哪里**"——一晚上的讨论定了什么、改成了什么、否掉了什么。同一决定被反复修改时只写最后落定的那个。汇总条目与逐轮条目同规格入库（同样带 abstract / theme / keywords）。
 
 ### 3.8 其余
 
@@ -153,7 +175,10 @@
 | 想要的效果 | 改哪里 |
 |---|---|
 | 关掉自动记忆 | `memory.features.autoWrite: false`（或 `memory.enabled: false` + 重启） |
-| 注入更少打扰 | `injectMinScore: 0.05` 或 `0.08` |
+| 注入更少打扰（频率） | `injectPace: lazy`（每 30 步） |
+| 注入更少打扰（质量阈值） | `injectMinScore: 0.05` 或 `0.08` |
+| 注入更勤 | `injectPace: aggressive`（每 4 步） |
+| 精确控制步距 | `injectPace: custom` + `stepInterval: N`（1~60） |
 | 注入更多上下文 | `injectMaxTokens: 1200`、`injectMinScore: 0.015` |
 | 换提取模型 | `refiner.provider` / `refiner.model` |
 | 开图谱 | `features.graph: true` + `graphView` 微调 |

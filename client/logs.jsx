@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 /** 记忆日志面板（v0.9.5）：背后运行了什么完全透明可见。
  *  轮询 /dsh-memory/logs，级别/事件筛选，自动滚动。 */
-function MemoryLogPanel() {
+export function MemoryLogPanel() {
   const [logs, setLogs] = useState([])
   const [level, setLevel] = useState("all")
   const [event, setEvent] = useState("all")

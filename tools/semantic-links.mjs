@@ -64,7 +64,11 @@ if (rollbackStamp) {
 const mem = q('SELECT rowid, id, layer, scope, theme, created_at, content FROM memories')
 const byId = new Map(mem.map((m) => [m.id, m]))
 const byRow = new Map(mem.map((m) => [m.rowid, m]))
-const rows = q('SELECT rowid, embedding FROM memory_vectors')
+// vec0 表可能残留"记忆已删但向量还在"的孤儿行（2026-09-21 实测库里就有 1 条，
+// 会让下面的 byRow.get(b).id 直接崩掉）——只保留有对应记忆的向量行。
+const rawRows = q('SELECT rowid, embedding FROM memory_vectors')
+const rows = rawRows.filter((r) => byRow.has(r.rowid))
+if (rawRows.length !== rows.length) console.log(`⚠️ 跳过 ${rawRows.length - rows.length} 条孤儿向量（无对应记忆）`)
 if (rows.length === 0) { console.log('没有向量数据，无法判定。'); process.exit(1) }
 const dim = rows[0].embedding.length / 4
 const vec = new Map()

@@ -1,6 +1,8 @@
 // v0.10.1 注入管线专项：修复"AI 回复后记忆块作为独立一步被消费 → 模型多答一轮"
 // 用法: node test-inject-pipeline.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
 import { attachInjectPipeline } from './lib/pipelines/inject.js'
+import { Config, INJECT_PACE_LABELS, INJECT_PACE_STEPS, resolveStepInterval } from './lib/config.js'
+import { readFileSync } from 'node:fs'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
@@ -8,6 +10,9 @@ const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`)
 const CFG = () => ({
   scope: 'test',
   features: { preStepInject: true },
+  // 老用例按数字断言节奏 → 显式走「自定义」档，让 stepInterval 说了算
+  // （v0.11.2 起默认档位 steady=12 会覆盖数字，不给 custom 这些用例就全错）
+  injectPace: 'custom',
   stepInterval: 2,
   injectMaxTokens: 800,
   injectMinScore: 0.02,
@@ -143,9 +148,9 @@ console.log('== 4b. 同 query 步距到 → 必检（命中内容变化则再次
   check('步距到同 query 重检并注入（检索出更新内容）', d3.messages.length === 3)
 }
 
-console.log('== 7. stepInterval=10 长任务节奏：75 步 → 8 个检索注入点（步 1 首检 + 每满 10 步） ==')
+console.log('== 7. 自定义档 stepInterval=10：75 步 → 8 个检索注入点（步 1 首检 + 每满 10 步） ==')
 {
-  const CFG10 = () => ({ ...CFG(), stepInterval: 10 })
+  const CFG10 = () => ({ ...CFG(), injectPace: 'custom', stepInterval: 10 })
   let n = 0
   const { call, logs } = setup({
     cfg: CFG10,
@@ -160,6 +165,100 @@ console.log('== 7. stepInterval=10 长任务节奏：75 步 → 8 个检索注�
   check('75 步内注入于步 1,11,21,31,41,51,61,71', injected.join(',') === '1,11,21,31,41,51,61,71')
   check('8 次注入 = 1 次首检 + 7 次满 10 步', injected.length === 8)
   check('日志 step 与注入步号一致', logs.map((l) => l.step).join(',') === injected.join(','))
+}
+
+console.log('== 7b. 档位解析（v0.11.2）：激进 4 / 平稳 12 / 懒惰 30 / 自定义用数字 / 未知回落平稳 ==')
+{
+  check('激进档 = 4 步', resolveStepInterval({ injectPace: 'aggressive' }) === 4)
+  check('平稳档 = 12 步', resolveStepInterval({ injectPace: 'steady' }) === 12)
+  check('懒惰档 = 30 步', resolveStepInterval({ injectPace: 'lazy' }) === 30)
+  check('自定义档读 stepInterval', resolveStepInterval({ injectPace: 'custom', stepInterval: 12 }) === 12)
+  check('自定义档：超上限夹到 60，非法值（0/非数）回落平稳 12 而不是夹成"每步都检"',
+    resolveStepInterval({ injectPace: 'custom', stepInterval: 999 }) === 60
+    && resolveStepInterval({ injectPace: 'custom', stepInterval: 0 }) === 12
+    && resolveStepInterval({ injectPace: 'custom', stepInterval: 'abc' }) === 12)
+  check('档位缺失（老配置只写了 stepInterval: 2）→ 平稳 12，不再吃旧数字', resolveStepInterval({ stepInterval: 2 }) === 12)
+  check('档位写错（steadyy）→ 回落平稳，不抛错', resolveStepInterval({ injectPace: 'steadyy' }) === 12)
+  check('档位表单调：激进 < 平稳 < 懒惰', INJECT_PACE_STEPS.aggressive < INJECT_PACE_STEPS.steady && INJECT_PACE_STEPS.steady < INJECT_PACE_STEPS.lazy)
+}
+
+console.log('== 7c. 平稳档（steady=12）长任务节奏：121 步 → 11 个检索注入点 ==')
+{
+  const CFGSteady = () => ({ ...CFG(), injectPace: 'steady' })
+  let n = 0
+  const { call, logs } = setup({
+    cfg: CFGSteady,
+    hits: () => [{ id: `mem12-${++n}`, content: `记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+  })
+  const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const injected = []
+  for (let i = 1; i <= 121; i++) {
+    const d = await call(`第 ${i} 步的工作内容 ${i}`, fallback)
+    if (d.messages.length === 2) injected.push(i)
+  }
+  check('121 步内注入于步 1,13,25,37,49,61,73,85,97,109,121（每满 12 步）', injected.join(',') === '1,13,25,37,49,61,73,85,97,109,121')
+  check('11 次注入 = 1 次首检 + 10 次满 12 步', injected.length === 11)
+  check('日志 step 与注入步号一致', logs.map((l) => l.step).join(',') === injected.join(','))
+  check('日志带生效步距与档位（能对账"是哪档在跑"）', logs.every((l) => l.interval === 12 && l.pace === 'steady'))
+}
+
+console.log('== 7d. 懒惰档（lazy=30）长任务节奏：61 步 → 3 个检索注入点 ==')
+{
+  const CFGLazy = () => ({ ...CFG(), injectPace: 'lazy' })
+  let n = 0
+  const { call } = setup({
+    cfg: CFGLazy,
+    hits: () => [{ id: `mem30-${++n}`, content: `记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+  })
+  const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const injected = []
+  for (let i = 1; i <= 61; i++) {
+    const d = await call(`第 ${i} 步的工作内容 ${i}`, fallback)
+    if (d.messages.length === 2) injected.push(i)
+  }
+  check('61 步内只注入于步 1,31,61', injected.join(',') === '1,31,61')
+}
+
+console.log('== 7e. 自定义档 stepInterval=12：数字真正说了算 ==')
+{
+  const CFG12 = () => ({ ...CFG(), injectPace: 'custom', stepInterval: 12 })
+  let n = 0
+  const { call } = setup({
+    cfg: CFG12,
+    hits: () => [{ id: `memc-${++n}`, content: `记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+  })
+  const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const injected = []
+  for (let i = 1; i <= 37; i++) {
+    const d = await call(`第 ${i} 步的工作内容 ${i}`, fallback)
+    if (d.messages.length === 2) injected.push(i)
+  }
+  check('37 步内注入于步 1,13,25,37', injected.join(',') === '1,13,25,37')
+}
+
+console.log('== 7f. schema：injectPace 默认平稳、stepInterval 上限 60（v0.11.2 由 10 放宽） ==')
+{
+  check('Config({}).injectPace 默认 steady', Config({}).injectPace === 'steady')
+  check('Config({injectPace:"lazy"}) 接受', Config({ injectPace: 'lazy' }).injectPace === 'lazy')
+  check('Config({injectPace:"乱写"}) 不抛错（回落由解析层兜底）', Config({ injectPace: '乱写' }).injectPace === '乱写')
+  check('Config({stepInterval:12}) = 12（旧上限 10 会把用户要的 12 判非法）', Config({ stepInterval: 12 }).stepInterval === 12)
+  check('Config({}).stepInterval 默认仍是 10（自定义档的起点）', Config({}).stepInterval === 10)
+  let rejected = false
+  try { Config({ stepInterval: 61 }) } catch { rejected = true }
+  check('Config({stepInterval:61}) 被拒（上限 60）', rejected)
+  let rejected0 = false
+  try { Config({ stepInterval: 0 }) } catch { rejected0 = true }
+  check('Config({stepInterval:0}) 被拒（下限 1）', rejected0)
+}
+
+console.log('== 7g. 客户端档位表与 config 同源（防"UI 写 12、代码跑 10"漂移） ==')
+{
+  const src = readFileSync(new URL('./client/settings.jsx', import.meta.url), 'utf8')
+  const block = src.match(/const INJECT_PACE_OPTIONS = \[([\s\S]*?)\n\]/)?.[1] ?? ''
+  const rows = [...block.matchAll(/\['([a-z]+)', '([^']+)', (\d+),/g)].map((m) => ({ key: m[1], label: m[2], steps: Number(m[3]) }))
+  check('客户端列出 4 个档位（三档 + 自定义）', rows.length === 4 && rows.map((r) => r.key).join(',') === 'aggressive,steady,lazy,custom')
+  check('档位步距与 INJECT_PACE_STEPS 完全一致', rows.filter((r) => r.key !== 'custom').every((r) => r.steps === INJECT_PACE_STEPS[r.key]))
+  check('档位标签与 INJECT_PACE_LABELS 完全一致', rows.every((r) => r.label === INJECT_PACE_LABELS[r.key]))
 }
 
 console.log('== 5. 守卫：无真实用户文本 / 空检索 / reject 均不注入 ==')

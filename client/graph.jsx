@@ -3,6 +3,8 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 sidebar.footer.action 插槽。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
+// v0.12.8：日志并入图谱面板——不再单独占侧边栏入口
+import { MemoryLogPanel } from './logs.jsx'
 import { themeBounds, clusterByDistance, densityCore, convexHull, padConvexPolygon, polygonContains } from './graph-geometry.js'
 import { layoutSignature, loadLayout, saveLayout, restoredRatio } from './layout-cache.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
@@ -1134,6 +1136,8 @@ function MemoryGraphView({ scope }) {
  */
 export function MemoryGraphLauncher({ wide, scope }) {
   const [open, setOpen] = useState(false)
+  // v0.12.8：日志并入本面板，用标签切换（不再单独占侧边栏入口）
+  const [view, setView] = useState('graph')
   // Esc 关闭全视口面板（键盘可达性；关闭按钮被遮挡时的兜底路径）
   useEffect(() => {
     if (!open) return
@@ -1154,15 +1158,24 @@ export function MemoryGraphLauncher({ wide, scope }) {
           color: '#ccc', cursor: 'pointer', fontSize: 12,
         }}
       >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-          <circle cx="3" cy="3" r="1.8" fill="#5b9bd5" />
-          <circle cx="11" cy="3" r="1.8" fill="#e07b39" />
-          <circle cx="7" cy="11" r="1.8" fill="#70ad47" />
-          <line x1="3.8" y1="4.2" x2="9.8" y2="4.2" stroke="#777" strokeWidth="0.8" />
-          <line x1="3.6" y1="4.6" x2="6.4" y2="9.6" stroke="#777" strokeWidth="0.8" />
-          <line x1="10.4" y1="4.6" x2="7.6" y2="9.6" stroke="#777" strokeWidth="0.8" />
+        {/* v0.12.8 图标：渐变 + 光晕的节点网络（替换原来的纯色三点连线） */}
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="dshMemGrad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="#7cc4ff" />
+              <stop offset="52%" stopColor="#a78bfa" />
+              <stop offset="100%" stopColor="#f0a868" />
+            </linearGradient>
+          </defs>
+          <circle cx="12" cy="12" r="9.2" stroke="url(#dshMemGrad)" strokeWidth="0.9" opacity="0.3" />
+          <path d="M5 6 L12 12 M19 6 L12 12 M12 12 L12 20" stroke="url(#dshMemGrad)" strokeWidth="1.5" strokeLinecap="round" opacity="0.9" />
+          <circle cx="5" cy="6" r="2.3" fill="url(#dshMemGrad)" />
+          <circle cx="19" cy="6" r="2.3" fill="url(#dshMemGrad)" />
+          <circle cx="12" cy="20" r="2.3" fill="url(#dshMemGrad)" />
+          <circle cx="12" cy="12" r="3.1" fill="url(#dshMemGrad)" />
+          <circle cx="12" cy="12" r="3.1" fill="#fff" opacity="0.35" />
         </svg>
-        {wide ? <span>记忆图谱</span> : null}
+        {wide ? <span>记忆</span> : null}
       </button>
       {open ? (
         <div style={{
@@ -1172,11 +1185,27 @@ export function MemoryGraphLauncher({ wide, scope }) {
           WebkitBackdropFilter: 'blur(22px) saturate(1.2)',
           display: 'flex', flexDirection: 'column',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', padding: '44px 16px 10px', flex: 'none' }}>
-            <span style={{ fontSize: 15, fontWeight: 600, color: '#ddd', letterSpacing: 0.5 }}>记忆图谱</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '44px 16px 10px', flex: 'none' }}>
+            <span style={{ fontSize: 15, fontWeight: 600, color: '#ddd', letterSpacing: 0.5 }}>记忆</span>
+            {/* v0.12.8：图谱 / 日志 两个视图，共用一个入口 */}
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[['graph', '图谱'], ['logs', '日志']].map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setView(k)}
+                  style={{
+                    padding: '4px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 12.5,
+                    border: '1px solid ' + (view === k ? 'rgba(124,196,255,0.55)' : 'rgba(255,255,255,0.14)'),
+                    background: view === k ? 'rgba(124,196,255,0.16)' : 'transparent',
+                    color: view === k ? '#cfe6ff' : '#999',
+                  }}
+                >{label}</button>
+              ))}
+            </div>
           </div>
           <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-            <MemoryGraphView scope={scope} />
+            {view === 'logs' ? <MemoryLogPanel /> : <MemoryGraphView scope={scope} />}
             {/* 左下角退出键：毛玻璃质感，远离顶栏不被遮挡；Esc 同效 */}
             <button
               type="button"
