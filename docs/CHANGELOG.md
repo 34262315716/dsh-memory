@@ -1,5 +1,15 @@
 # 开发历程（CHANGELOG）
 
+## v0.13.1 — 常驻预算改成按「真正注入的那段文本」计费（2026-09-26）
+
+v0.13.0 的 `buildPinned()` 用**未截断原文**的 `estimateTokens(content)` 逐条累加记账，而 `renderPinned()` 渲染时会把每条截到 `PIN_ITEM_CHARS`(260) —— 长条目按原长收费，预算被白吃掉一大半。实测真实库：**12 条钉选只装进 7 条**。
+
+改法：每装一条就用 `renderPinned(candidate)` 量一次最终文本（最多 12 次纯字符串操作），计费对象 = 真正会注入的那段文本。同时把单条渲染抽成 `renderPinLine()`，让「计费」与「渲染」共用同一份逻辑，不留第二套长度口径。
+
+实测（本机 12 条钉选 → 块长 3159 字）：11 条 = 1420 token、**12 条 = 1608 token**（正卡在旧配置 1600 的边界外），故把本机 `pinnedMaxTokens` 提到 2000。
+
+测试：`test-inject-pipeline` 新增 2 项（超长钉选按渲染后的行长计费：3 条 4000 字记忆在 500 token 预算内全部装入，且块内仍被截到单条上限）。
+
 ## v0.13.0 — 注入不再被系统提醒带偏 + 常驻（钉选）恒定注入通道（2026-09-26）
 
 用户两条要求：
@@ -22,7 +32,7 @@
 
 用户要的「恒定注入」不能靠检索实现（检索必然按相关性给结果），所以单开一条通道：
 
-- **存储**：`memories` 表加 `pinned` 列（补列迁移自动完成）；新增 `listPinned()`（`WHERE pinned = 1 AND archived = 0 ORDER BY rowid`，按钉选先后定序、**不带 scope 过滤** → 跨项目恒在）、`pinnedCount()`、`setPinned(id, on)`（刻意**不动 `updated_at`**，钉选是治理动作，不该把它顶到浏览列表最前）。
+- **存储**：`memories` 表加 `pinned` 列（补列迁移自动完成）；新增 `listPinned()`（`WHERE pinned = 1 AND archived = 0 ORDER BY rowid`，按**创建**先后定序、**不带 scope 过滤** → 跨项目恒在；顺序固定只为确定性，不代表优先级）、`pinnedCount()`、`setPinned(id, on)`（刻意**不动 `updated_at`**，钉选是治理动作，不该把它顶到浏览列表最前）。
 - **注入**：pre-step 每步先装常驻块（`pinnedLimit` 默认 8 条、`pinnedMaxTokens` 默认 600），排在检索块**之前**（位置稳定 → 前缀缓存可命中）；常驻块**不带相关度、不带时间戳** → 内容不变则文本逐字不变 → 块指纹不变 → 去抖不会每步刷屏；`excludeIds` 只收检索块的 id，所以常驻**不进防循环窗口**，永远可重复抵达。
 - **开局**：`session-start` 的预热也带常驻（`- [常驻·类型] …`），配合原有的治理留痕。
 - **工具**：新增 `memory_pin`：`memory_pin {}` 看常驻清单、`memory_pin {id, pinned:true|false}` 钉选/取消。

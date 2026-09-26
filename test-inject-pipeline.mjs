@@ -417,6 +417,13 @@ console.log('== 11. 常驻装配与渲染（buildPinned / renderPinned） ==')
   check('存储异常 → 降级为空且不抛错（常驻坏了不连累注入）', r3.pins.length === 0 && r3.text === '')
   const fakeLimit = { listPinned: ({ limit }) => [mk(1, 10), mk(2, 10), mk(3, 10)].slice(0, limit) }
   check('pinnedLimit 生效（只取前 2 条）', buildPinned(fakeLimit, { pinnedLimit: 2, pinnedMaxTokens: 600 }).pins.length === 2)
+  // v0.13.1：预算必须按「真正注入的那一行」计费（旧实现按未截断原文计费 → 只装得下 1 条）
+  {
+    const longPins = { listPinned: ({ limit }) => [mk(1, 4000), mk(2, 4000), mk(3, 4000)].slice(0, limit) }
+    const r4 = buildPinned(longPins, { pinnedLimit: 8, pinnedMaxTokens: 500 })
+    check('超长钉选按渲染后的行长计费（3 条在 500 token 预算内全装得下）', r4.pins.length === 3)
+    check('超长钉选在块内被截到单条上限', r4.text.length < 1100 && r4.text.includes('#mem-b3'))
+  }
   const text = renderPinned([{ id: 'mem-1', type: 'lesson', content: '第一行\n第二行' }])
   check('renderPinned 头含条数与「恒定注入」', text.startsWith('[记忆] 常驻要点（恒定注入 · 钉选 1 条'))
   check('renderPinned 多行内容压成单行', text.includes('第一行 第二行') && !text.includes('\n第二行'))
@@ -445,7 +452,7 @@ console.log('== 12. 存储层：pinned 列 / 常驻清单 / 确定性顺序 ==')
     check('未知 id → false（不抛错）', s.setPinned('mem-nope', true) === false)
     s.setPinned(id1, true)
     s.setPinned(id2, true)
-    check('顺序按钉选先后（rowid），与 updated_at 无关 —— 注入块必须确定性',
+    check('顺序按创建先后（rowid）且与 updated_at 无关 —— 注入块必须确定性',
       s.listPinned().map((m) => m.id).join(',') === `${id1},${id2}`)
     s.setPinned(id1, false)
     check('取消钉选后清单只剩一条', s.listPinned().map((m) => m.id).join(',') === id2)
