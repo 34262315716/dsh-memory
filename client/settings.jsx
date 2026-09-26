@@ -611,12 +611,35 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
     setMsg('')
   }
 
+  // v0.12.9：以前这里无论什么原因都写死一句「不可用（host 未注册 memory 命名空间）」，
+  // 2026-09-26 排查时把我和用户都带偏了——真实原因分三种，排查方向完全不同，
+  // 所以现在按实际状态分别说明（就地诊断，不必再去翻浏览器 console）。
   if (status !== 'ready') {
+    const bound = scope && scope.__dshBound === true
+    // 'idle' 是 describe 镜像还没回来（宿主设置文档尚在读），属于正常的瞬时态；
+    // 只有桩才会给出 undefined。两者都归到「加载中」。
+    const loading = bound && (status === 'loading' || status === 'idle' || status === undefined)
     return (
       <div style={{ padding: 16, maxWidth: 680, boxSizing: 'border-box' }}>
         <h3 style={{ margin: '0 0 8px', fontSize: 16, color: T.label }}>记忆</h3>
-        <p style={{ color: T.sub, fontSize: 13 }}>
-          记忆插件设置{status === 'loading' ? '加载中…' : '不可用（host 未注册 memory 命名空间）'}
+        {loading && bound ? (
+          <p style={{ color: T.sub, fontSize: 13 }}>记忆插件设置加载中…</p>
+        ) : !bound ? (
+          <p style={{ color: T.sub, fontSize: 13, lineHeight: 1.7 }}>
+            记忆插件设置不可用：客户端没取到设置服务（settingsScope）。<br />
+            这通常是上游 <code>dsh-client-ui-settings</code> 未加载或未启动完成；
+            <b>刷新页面（F5 / Ctrl+R）</b>后再打开本页，多半即可恢复。
+          </p>
+        ) : (
+          <p style={{ color: T.sub, fontSize: 13, lineHeight: 1.7 }}>
+            记忆插件设置不可用：宿主没有对外提供 <code>memory</code> 命名空间。<br />
+            请打开 <code>settings.yaml</code> 检查 <code>memory</code> 段——某个取值越界会让
+            宿主注册失败（日志里会有 <code>[dsh-memory] settings 注册失败</code>）。
+          </p>
+        )}
+        <p style={{ color: T.sub, fontSize: 11, marginTop: 10, opacity: 0.7 }}>
+          诊断：status={String(status)}・scope={bound ? '已连接' : '未连接'}
+          {snap && snap.error ? `・error=${String(snap.error)}` : ''}
         </p>
       </div>
     )

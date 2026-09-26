@@ -1,5 +1,41 @@
 # 开发历程（CHANGELOG）
 
+## v0.12.9 — 设置面板「不可用」：不是宿主没注册，是客户端取值的时机不对（2026-09-26）
+
+用户反馈「设置页里记忆的设置项又不见了」，面板上写着：**记忆插件设置不可用（host 未注册 memory 命名空间）**。
+
+### 一、先把文案暗示的那个原因排掉
+
+- **EAC 日志全量排查**：当前世代的最近三次启动（6272 / 6283 / **6339** 行）里**一条 `[dsh-memory] settings 注册失败` 都没有**。历史上只有 2 次，且都在旧构建世代（5698 / 5703 行，`$.stepInterval expected number <= 10 but got 12` —— 手写值撞上了旧 schema 上限；这正是 v0.11.2 把上限从 10 放宽到 60 的起因）。
+- **settings.yaml 的 `memory` 段逐项对照 schema**：取值全部合法。
+
+⇒ **命名空间注册是好的。那句文案在说谎**，而错误文案把排查方向带偏了一大截——这正是下面第 3 条要改它的理由。
+
+### 二、真正的原因：三个插件一横向对比就出来了
+
+设置面板出不出内容，取决于客户端拿到的 `settingsScope` 服务。对照 profile 里所有能正常显示设置项的插件：
+
+| 插件 | inject 声明 | 取 scope 的方式 |
+|---|---|---|
+| picturereader / computer-user / dsh-soul-md | `["slots","locale","settingsScope"]` | `ctx.settingsScope.bind({namespace})` |
+| **dsh-memory**（坏） | `["slots"]` | `ctx.get('settingsScope')` |
+
+cordis 的 `inject` 不只是「我用到它」的声明，**它同时是就绪保证**：声明的服务没就绪，`apply` 不会被调用。不声明就只能靠 apply 的时机碰运气。
+
+而 v0.12.7 为修「入口全消失」把 `settingsScope` 和 `connection` **一起**改成了运行时软获取——**那次真正的元凶是 connection**（裸解构 `const { api } = ctx.get('connection')` 抛 TypeError，整个 apply 中断），`settingsScope` 是被连坐的。
+
+拿到 undefined 之后，万能降级桩接手；**桩的 `subscribe` 是空函数** → describe 镜像加载完也通知不到组件 → 面板永远停在「不可用」。**时序错一次，就永久错。**
+
+### 三、修复
+
+1. **`inject = ['slots','settingsScope']`** —— 照抄能用的写法。`connection` 保持软获取，两者各归各位：settingsScope 硬声明（保证设置面板可用），connection 软获取（保证入口不消失）。
+2. **settingsScope 改为惰性绑定**：不在 apply 时一次性取值，改成**每次访问属性时实时解析一次**，绑好即缓存；未就绪则**不缓存**（这是自愈的来源）。方法回绑 `bound` 本身，避免脱 this 调用。
+3. **那句误导文案改成就地诊断**：按真实状态分三种说法（设置服务未连接 / 命名空间未注册 / 加载中），并附一行 `status=…・scope=…・error=…`。**带偏人的地方，一律改成会说实话。**
+
+### 四、顺带
+
+- 注入步距 `steady`(12 步) → `custom` + `stepInterval: 5`（用户反馈「出的频率太慢」）。
+
 ## v0.12.8 — 长输入提取的真凶：一个残留的 `maxTokens: 800`（2026-09-23）
 
 v0.12.6 修好了"缺 sessionId"，但提取仍在**持续降级**：近 20 分钟的日志里就有 5 次 `write.fallback`，形态高度一致——思考 3700~5600 字、正文 0~72 段、尝试 3 次续跑 1 次，末次 `finish=[object Object]`。
