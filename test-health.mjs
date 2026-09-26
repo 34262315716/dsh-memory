@@ -117,6 +117,24 @@ console.log('== 4. 提取（refiner）探针 ==')
   check('并如实标注到达预算', /预算/.test(rep.refiner.live.note ?? ''))
 }
 {
+  // v0.13.2：真实事故（2026-09-26）——进程刚起时第一次 LLM 调用只回 [usage,finish] 空回包，
+  // 同一进程紧接着再探两次都正常出正文。探针必须重试一次，不能把冷启动抖动报成「模型不可用」。
+  const calls = []
+  const ctxCold = {
+    llm: {
+      async *stream() {
+        calls.push(1)
+        if (calls.length === 1) { yield { type: 'usage', usage: {} }; yield { type: 'finish', reason: { kind: 'stop' } }; return }
+        yield { type: 'text-delta', text: '{"ok":true}' }
+      },
+    },
+  }
+  const store = mkStore({ embedder: okEmbedder(8) })
+  const rep = await buildHealthReport(ctxCold, store, baseCfg(), { withLlm: true })
+  check('首次空回包 → 自动重试一次后判可用', rep.refiner.live.ok === true && calls.length === 2)
+  check('重试成功时 note 如实写明抖动（不掩盖）', /重试成功/.test(rep.refiner.live.note ?? ''))
+}
+{
   const store = mkStore({ embedder: okEmbedder(8) })
   const ctxEmpty = { llm: { stream: async function* () { /* 空回包 */ } } }
   const r1 = await buildHealthReport(ctxEmpty, store, baseCfg(), { withLlm: true })
