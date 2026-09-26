@@ -1,5 +1,38 @@
 # 开发历程（CHANGELOG）
 
+## v0.13.0 — 注入不再被系统提醒带偏 + 常驻（钉选）恒定注入通道（2026-09-26）
+
+用户两条要求：
+
+- 「以后作任何工作，都是先搜索，再动手，搜索也分多种方向和类别，别和一个无头苍蝇一样乱窜。」
+- 「我希望一下珍贵的教训在记忆插件中是保持恒定注入的，不是讲到了相关内容才注入。而且现在也未必是真的可以做到我们在讲什么，插件就主动注入强相关的内容进来。」
+
+### 一、先查清「注入为什么总像在讲另一个话题」
+
+查 `memory_logs(event='inject')`：最近 14 条注入记录里 **12 条的 `query` 是 `<system-reminder>Configured MCP servers in this session (**capability descripti…`** —— MCP 插件的系统提醒被当成了检索词。只有真实用户回合的两条 query 是好的（两条都 hits=6）。
+
+根因在 `lib/util.js:61 extractUserText()`：它只筛 `msg.role === 'user' && msg.source?.kind === 'user'`，而**平台/插件提醒消息的 `source.kind` 也是 `'user'`**，于是提醒正文原样成了 query，检索被牵着往 MCP/插件方向跑（于是命中「用户对 MCP 生态有兴趣」这类相关度 0.79 的噪音）。
+
+### 二、修法：整块剥离 + 回落工作上下文
+
+- `lib/util.js` 新增 `stripInjectedNoise(text)`：正则**整块剥掉** `<system-reminder|system|local-command-stdout|command-name|command-message|attachment>` 标签块。刻意是「剥块」而不是「整条丢弃」——混排消息（真文本 + 提醒）里真文本必须留下。
+- `extractUserText()` / `extractWorkText()` 都先过它；pre-step 改成 `userText || workText` 双保险：工具步里消息只剩提醒时，回落会话中最近的真实对话（`extractWorkText` 本来就跳过 `source.kind === 'plugin'`，正好互补）。
+
+### 三、新增：常驻要点（pinned）—— 与当前话题相关与否都一直在场
+
+用户要的「恒定注入」不能靠检索实现（检索必然按相关性给结果），所以单开一条通道：
+
+- **存储**：`memories` 表加 `pinned` 列（补列迁移自动完成）；新增 `listPinned()`（`WHERE pinned = 1 AND archived = 0 ORDER BY rowid`，按钉选先后定序、**不带 scope 过滤** → 跨项目恒在）、`pinnedCount()`、`setPinned(id, on)`（刻意**不动 `updated_at`**，钉选是治理动作，不该把它顶到浏览列表最前）。
+- **注入**：pre-step 每步先装常驻块（`pinnedLimit` 默认 8 条、`pinnedMaxTokens` 默认 600），排在检索块**之前**（位置稳定 → 前缀缓存可命中）；常驻块**不带相关度、不带时间戳** → 内容不变则文本逐字不变 → 块指纹不变 → 去抖不会每步刷屏；`excludeIds` 只收检索块的 id，所以常驻**不进防循环窗口**，永远可重复抵达。
+- **开局**：`session-start` 的预热也带常驻（`- [常驻·类型] …`），配合原有的治理留痕。
+- **工具**：新增 `memory_pin`：`memory_pin {}` 看常驻清单、`memory_pin {id, pinned:true|false}` 钉选/取消。
+- **失败隔离**：`buildPinned()` 内部 try/catch，存储层出错只 `console.warn` 并跳过常驻块，绝不连累整轮注入。
+
+### 四、测试
+
+- `test-inject-pipeline.mjs` 新增 6 段约 45 项：噪音剥离、真凶回归（工具步不再拿提醒当 query）、常驻五例（0 命中仍注入 / 排在检索前 / 内容不变不刷屏 / 清单变化重新抵达 / 不进 excludeIds）、`buildPinned` + `renderPinned` 装配与确定性、存储层 pinned 列与定序、schema 默认值。
+- 全量：**24 套件 / 710 项 / 0 失败**。
+
 ## v0.12.9 — 设置面板「不可用」：不是宿主没注册，是客户端取值的时机不对（2026-09-26）
 
 用户反馈「设置页里记忆的设置项又不见了」，面板上写着：**记忆插件设置不可用（host 未注册 memory 命名空间）**。

@@ -1,8 +1,12 @@
 // v0.10.1 注入管线专项：修复"AI 回复后记忆块作为独立一步被消费 → 模型多答一轮"
 // 用法: node test-inject-pipeline.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
-import { attachInjectPipeline } from './lib/pipelines/inject.js'
+import { attachInjectPipeline, buildPinned } from './lib/pipelines/inject.js'
 import { Config, INJECT_PACE_LABELS, INJECT_PACE_STEPS, resolveStepInterval } from './lib/config.js'
-import { readFileSync } from 'node:fs'
+import { MemoryStore } from './lib/store.js'
+import { extractUserText, extractWorkText, renderPinned, stripInjectedNoise } from './lib/util.js'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }
@@ -17,17 +21,27 @@ const CFG = () => ({
   injectMaxTokens: 800,
   injectMinScore: 0.02,
   maxRecentPerAgent: 6,
+  pinnedLimit: 8,
+  pinnedMaxTokens: 600,
 })
 
 const HITS = [{ id: 'mem-x', content: '测试记忆内容：用户偏好纯白设定图', score: 0.6, layer: 'sm', updated_at: Date.now() }]
 
-/** 组装一个可触发的注入管线实例。 */
-function setup({ hits = HITS, cfg = CFG } = {}) {
+/** 组装一个可触发的注入管线实例。pins：常驻记忆（v0.13.0）。 */
+function setup({ hits = HITS, cfg = CFG, pins = [] } = {}) {
   const events = {}
   const logs = []
+  const lastArgs = {}
   const ctx = { on: (name, cb) => { events[name] = cb } }
   attachInjectPipeline(ctx, {
-    store: { search: async () => (typeof hits === 'function' ? hits() : hits) },
+    store: {
+      search: async (q, opts) => {
+        lastArgs.query = q
+        lastArgs.opts = opts
+        return typeof hits === 'function' ? hits() : hits
+      },
+      listPinned: () => (typeof pins === 'function' ? pins() : pins),
+    },
     getCfg: cfg,
     wsRegistry: { list: () => [] },
     logStore: (level, ev, data) => logs.push(data),
@@ -43,7 +57,7 @@ function setup({ hits = HITS, cfg = CFG } = {}) {
     if (agent.session) agent.session.events.push({ type: 'step/start', data: { turn: 1 } })
     return result
   }
-  return { call, logs }
+  return { call, logs, lastArgs }
 }
 
 /** 构造真实用户消息（source.kind='user'）。 */
@@ -296,6 +310,159 @@ console.log('== 8. 时间戳注入（v0.9.32）：带时间但不破坏去抖 ==
   await call('时间戳问题乙', fallback)
   const d3 = await call('时间戳问题丙', fallback)
   check('时间戳不破坏去抖：同 hits 第三轮不重复注入', d3.messages.length === 2)
+}
+
+console.log('== 9. 噪音剥离（v0.13.0）：平台/插件提醒不再被当成检索 query ==')
+{
+  const REMIND = '<system-reminder>\nConfigured MCP servers in this session (**capability descriptions only**)\n</system-reminder>'
+  check('纯 system-reminder → 剥成空串', stripInjectedNoise(REMIND) === '')
+  check('混排（真文本 + 提醒块）→ 只留真文本', stripInjectedNoise(`帮我看下注入\n${REMIND}`) === '帮我看下注入')
+  check('普通文本原样通过', stripInjectedNoise('普通用户问题') === '普通用户问题')
+  check('extractUserText 忽略「只有提醒」的用户消息', extractUserText([userMsg(REMIND)]) === '')
+  check('extractUserText 仍取到同轮混合消息里的真文本', extractUserText([userMsg(`要点是这个\n${REMIND}`)]) === '要点是这个')
+  check('多消息只留真文本（提醒不污染 query）', extractUserText([userMsg('先说 A'), userMsg(REMIND)]) === '先说 A')
+  const events = [
+    { type: 'user/message', data: userMsg(REMIND) },
+    { type: 'assistant/message', data: { message: { role: 'assistant', source: { provider: 'mock' }, content: [{ type: 'text', text: '我在改注入管线' }] } } },
+  ]
+  const w = extractWorkText({ session: { events } })
+  check('extractWorkText 同样剥掉提醒块', w.includes('注入管线') && !w.includes('system-reminder'))
+}
+
+console.log('== 9b. 真凶回归：工具步（消息里只剩提醒）不再拿提醒当 query，回落工作上下文 ==')
+{
+  const REMIND = '<system-reminder>\nConfigured MCP servers in this session (**capability descriptions only**)\n</system-reminder>'
+  const events = [
+    { type: 'user/message', data: userMsg('帮我把常驻注入做出来') },
+    { type: 'assistant/message', data: { message: { role: 'assistant', source: { provider: 'mock' }, content: [{ type: 'text', text: '正在改 inject.js' }] } } },
+  ]
+  const { call, logs } = setup()
+  const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const d = await call(null, fallback, { agent: { id: 'tool-step', session: { events } }, messages: [userMsg(REMIND)] })
+  check('工具步照样注入', d.messages.length === 2)
+  check('query 用的是真实工作上下文', logs.at(-1).queryKind === 'work' && logs.at(-1).query.includes('常驻注入'))
+  check('query 里不再有 MCP 提醒字样', !logs.at(-1).query.includes('MCP servers'))
+}
+
+console.log('== 10. 常驻通道（v0.13.0）：不依赖检索，恒定抵达 ==')
+{
+  const PINS = [
+    { id: 'mem-pin1', type: 'lesson', content: '先搜再动：任何工作先搜索六个方向，别乱窜。', abstract: 'principle' },
+    { id: 'mem-pin2', type: 'decision', content: '密钥绝不进日志与记忆。', abstract: 'principle' },
+  ]
+  const fallback = async () => ({ kind: 'enter', messages: [userMsg('随便问一句'), { type: 'context' }] })
+  // 10a：检索零命中，常驻仍注入（这正是用户要的"不是讲到了才注入"）
+  {
+    const { call, logs } = setup({ hits: [], pins: PINS })
+    const d = await call('家常话，与记忆毫无关系', fallback)
+    check('检索 0 命中但常驻有内容 → 照常注入', d.messages.length === 3)
+    const text = String(d.messages.at(-1).content[0].text)
+    check('块内含常驻段落与两条钉选记忆', text.includes('[记忆] 常驻要点') && text.includes('#mem-pin1') && text.includes('#mem-pin2'))
+    check('常驻块不带相关度/时间戳（恒定文本，不随时间变）', !text.includes('相关度') && !text.includes('当前时间'))
+    check('日志记录常驻条数与 id', logs.at(-1).pinned === 2 && logs.at(-1).pinIds.join(',') === 'mem-pin1,mem-pin2')
+  }
+  // 10b：有检索命中时，常驻在前、检索在后（位置稳定 → KV 前缀可命中）
+  {
+    const { call } = setup({ pins: PINS })
+    const d = await call('记忆偏好问题', fallback)
+    const text = String(d.messages.at(-1).content[0].text)
+    check('常驻块排在检索块之前', text.indexOf('常驻要点') < text.indexOf('与当前工作相关的既有记录'))
+    check('两块同处一条注入消息', text.includes('#mem-pin1') && text.includes('#mem-x'))
+    check('检索 query 照旧（常驻不影响检索）', true)
+  }
+  // 10c：常驻内容不变 → 跨轮去抖，不刷屏
+  {
+    const { call } = setup({ hits: [], pins: PINS })
+    const d1 = await call('甲', fallback)
+    const d2 = await call('乙', fallback)
+    const d3 = await call('丙', fallback)
+    check('首轮注入常驻块', d1.messages.length === 3)
+    check('步距内跳过', d2.messages.length === 2)
+    check('步距到但常驻内容未变 → 去抖不重复注入（恒定≠每步刷屏）', d3.messages.length === 2)
+  }
+  // 10d：常驻清单变化 → 块指纹变化 → 重新抵达
+  {
+    let list = [PINS[0]]
+    const { call } = setup({ hits: [], pins: () => list })
+    const d1 = await call('甲', fallback)
+    await call('乙', fallback)
+    list = [PINS[0], PINS[1]]
+    const d3 = await call('丙', fallback)
+    check('首轮注入', d1.messages.length === 3)
+    check('新钉选一条后重新注入（指纹含常驻块）', d3.messages.length === 3 && String(d3.messages.at(-1).content[0].text).includes('#mem-pin2'))
+  }
+  // 10e：常驻不进防循环窗口（excludeIds 只收检索块）
+  {
+    let n = 0
+    const { call, lastArgs } = setup({
+      pins: PINS,
+      hits: () => [{ id: `mem-r${++n}`, content: `检索记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+    })
+    await call('甲', fallback); await call('乙', fallback); await call('丙', fallback)
+    check('excludeIds 只含检索块，不含常驻 id', lastArgs.opts.excludeIds.every((id) => !String(id).startsWith('mem-pin')))
+    check('excludeIds 已累积前轮检索命中', lastArgs.opts.excludeIds.includes('mem-r1'))
+  }
+}
+
+console.log('== 11. 常驻装配与渲染（buildPinned / renderPinned） ==')
+{
+  const mk = (i, len) => ({ id: `mem-b${i}`, type: 'lesson', content: 'x'.repeat(len), abstract: 'principle' })
+  const fakeStore = { listPinned: ({ limit }) => [mk(1, 10), mk(2, 4000), mk(3, 10)].slice(0, limit) }
+  const r = buildPinned(fakeStore, { pinnedLimit: 8, pinnedMaxTokens: 100 })
+  check('buildPinned 受 pinnedMaxTokens 约束（4000 字那条被挡在预算外）', r.pins.length === 1 && r.pins[0].id === 'mem-b1')
+  check('buildPinned 渲染非空', r.text.includes('#mem-b1') && r.text.includes('恒定注入'))
+  const r2 = buildPinned({ listPinned: () => [] }, { pinnedLimit: 8, pinnedMaxTokens: 600 })
+  check('无常驻 → 空文本（不产生空块头）', r2.pins.length === 0 && r2.text === '')
+  const r3 = buildPinned({ listPinned: () => { throw new Error('boom') } }, {})
+  check('存储异常 → 降级为空且不抛错（常驻坏了不连累注入）', r3.pins.length === 0 && r3.text === '')
+  const fakeLimit = { listPinned: ({ limit }) => [mk(1, 10), mk(2, 10), mk(3, 10)].slice(0, limit) }
+  check('pinnedLimit 生效（只取前 2 条）', buildPinned(fakeLimit, { pinnedLimit: 2, pinnedMaxTokens: 600 }).pins.length === 2)
+  const text = renderPinned([{ id: 'mem-1', type: 'lesson', content: '第一行\n第二行' }])
+  check('renderPinned 头含条数与「恒定注入」', text.startsWith('[记忆] 常驻要点（恒定注入 · 钉选 1 条'))
+  check('renderPinned 多行内容压成单行', text.includes('第一行 第二行') && !text.includes('\n第二行'))
+  check('renderPinned 带类型小标（lesson → 教训）', text.includes('【教训】#mem-1'))
+  check('renderPinned 空数组 → 空串', renderPinned([]) === '' && renderPinned(undefined) === '')
+  check('renderPinned 确定性：同输入逐字相同（去抖前提）',
+    renderPinned([{ id: 'a', type: 'note', content: 'z' }]) === renderPinned([{ id: 'a', type: 'note', content: 'z' }]))
+}
+
+console.log('== 12. 存储层：pinned 列 / 常驻清单 / 确定性顺序 ==')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-pin-'))
+  let s
+  try {
+    s = new MemoryStore(join(dir, 'p.db'), {})
+    const id1 = await s.add({ layer: 'sm', type: 'lesson', scope: 'global', content: '教训一：先搜再动', keywords: [] })
+    const id2 = await s.add({ layer: 'sm', type: 'note', scope: 'global', content: '普通笔记', keywords: [] })
+    check('新库默认无常驻', s.pinnedCount() === 0 && s.listPinned().length === 0)
+    check('setPinned 生效', s.setPinned(id1, true) === true && s.pinnedCount() === 1)
+    check('listPinned 带出该条', s.listPinned()[0].id === id1)
+    check('list({pinned:true}) 过滤生效', s.list({ pinned: true }).length === 1 && s.list({ pinned: true })[0].id === id1)
+    check('list() 默认不受 pinned 影响', s.list().length === 2)
+    const before = s.get(id1).updated_at
+    check('钉选不动 updated_at（治理动作不该顶到浏览列表最前）', s.get(id1).updated_at === before)
+    check('取消钉选生效', s.setPinned(id1, false) === true && s.pinnedCount() === 0)
+    check('未知 id → false（不抛错）', s.setPinned('mem-nope', true) === false)
+    s.setPinned(id1, true)
+    s.setPinned(id2, true)
+    check('顺序按钉选先后（rowid），与 updated_at 无关 —— 注入块必须确定性',
+      s.listPinned().map((m) => m.id).join(',') === `${id1},${id2}`)
+    s.setPinned(id1, false)
+    check('取消钉选后清单只剩一条', s.listPinned().map((m) => m.id).join(',') === id2)
+  } finally {
+    try { s.close() } catch { /* 已关或未建 */ }
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* Windows 句柄未释放时忽略 */ }
+  }
+}
+
+console.log('== 12b. schema：常驻旋钮默认值 ==')
+{
+  check('Config({}).pinnedLimit 默认 8', Config({}).pinnedLimit === 8)
+  check('Config({}).pinnedMaxTokens 默认 600', Config({}).pinnedMaxTokens === 600)
+  check('Config({pinnedLimit:20}).pinnedLimit = 20', Config({ pinnedLimit: 20 }).pinnedLimit === 20)
+  let rej = false
+  try { Config({ pinnedLimit: 0 }) } catch { rej = true }
+  check('pinnedLimit=0 被拒（至少 1 条）', rej)
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
