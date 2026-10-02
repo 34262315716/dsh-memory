@@ -114,7 +114,16 @@ console.log('== D. 正常路径：全部工具注册 + 事件监听挂载 ==')
   const missing = expected.filter((n) => !ctx._registeredTools.includes(n))
   const extra = ctx._registeredTools.filter((n) => !expected.includes(n))
   check(`工具按源码注册 ${expected.length} 个（缺: ${missing.join(',') || '无'} · 多余: ${extra.join(',') || '无'}）`, missing.length === 0 && extra.length === 0)
-  check('事件监听挂载（session/event + pre-step + session-start）', Boolean(ctx._events['session/event']) && Boolean(ctx._events['agent/pre-step']) && Boolean(ctx._events['agent/session-start']))
+  check(
+    '事件监听挂载（session/event + pre-step + 预热双通道：agent/created + agent/disposed + session-start）',
+    Boolean(ctx._events['session/event'])
+      && Boolean(ctx._events['agent/pre-step'])
+      // v0.14.0 跨内核适配：0.2.0-rc.2 没有 agent/session-start，预热改走 agent/created
+      // + systemPrompt.section；两条通道都挂上，按能力择一，所以两边都要断言存在。
+      && Boolean(ctx._events['agent/created'])
+      && Boolean(ctx._events['agent/disposed'])
+      && Boolean(ctx._events['agent/session-start']),
+  )
   ctx._events['dispose']?.()
   rmSync(dir, { recursive: true, force: true })
 }

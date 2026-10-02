@@ -1,5 +1,43 @@
 # 开发历程（CHANGELOG）
 
+## v0.14.0 — 适配 DSH 0.2.0-rc.2：双内核分支 + 随包挂载 + 端点围栏（2026-10-03）
+
+起因：本插件一直是在 **0.1.2** 线上开发的，而本机运行的是 **0.2.0-rc.2**。要求不是"改成新版写法"，而是**两条线都要活**——用能力探测分支，绝不能用新版写法把 0.1.x 打死（反之亦然）。
+
+### 一、四处真断点（0.1.x 老写法 → 0.2.0-rc.2 事实 → 本版做法）
+
+| # | 断点 | 0.2.0-rc.2 的事实（有据） | 本版做法 |
+|---|---|---|---|
+| 1 | `import { settingsNamespace } from '@deepseek-ai/dsh-settings'` | 该包运行时只剩 `SettingsConflictError` / `SettingsForms` / `redactSecrets`；`settingsNamespace` 是**纯类型**。**静态命名导入 = 模块求值期 SyntaxError → 主机启动即 exit 1**（不是降级） | 删掉静态导入。`lib/compat.js` 里**动态** `import()` + 取不到回落字符串 |
+| 2 | `ctx.settings.register(ns, Config, {base, applies:'live'})` | `SettingsForms` **没有 `register`**。设置表单改由「entry 的 `Config`」决定，`describe()` 按 **profile entry id** 列出；**没标 `.volatile()` 的字段连 descriptor 都不产生** | `createSettingsFace()` 按服务能力择一：有 `register` 走老路（逐字节等价）；否则 `Config` **整表** `.volatile()` + `configure({auto:false}, fiber)` + `describe()` 读值 |
+| 3 | `ctx.on('agent/session-start', …)` | 0.2.0-rc.2 **没有这个事件**（61 个事件里有 `agent/created` / `agent/disposed`） | 预热改**双通道**：新线 `agent/created` → `systemPrompt.section()`；老线保留 `agent/session-start` → `agent.inject()`。`features.preheatRoute` 可强制 |
+| 4 | 客户端 `ctx.get('settingsScope').bind({namespace})` | 客户端 `settingsScope` 服务**已删**，替代品是 `ctx.configForms.get(entryId)`（`set/unset` 返回值从 `Promise<void>` 变 `Promise<boolean>`） | 客户端软取双通道 + entry id 候选 `memory` → `dsh-memory`；两代都没有则挂"不可用"桩（**入口不消失**） |
+
+外加一处撞名：工具 `memory_rewrite` 与 DSH 内核自带的同名工具**同进程互相遮蔽**（谁赢看注册顺序）→ 改名 **`memory_reprocess`**（日志事件名 `memory.rewrite` 保持不变，历史数据与 GUI 过滤器不受影响）。
+
+### 二、随包挂载（manifest 按四个在跑的邻居实测补齐）
+
+- **新增仓库根 `cordis.patch.yml`**（此前完全没有这个文件）+ `package.json` 的 `dsh.bundle.patch` → `dsh plugin add` 会把它追加进 profile 的有序 bundle 层，**不用改 profile 任何文件**。entry id = `memory`。
+- 补 `dsh.manifestVersion: 1`、`dsh.compatibility`（**声明性字段，全树 0 个 reader**，别当成门禁）、`engines.node`、`files` 里加 `cordis.patch.yml`（不加就发布不出去）。
+- **预发布 semver 陷阱（实测）**：`>=0.1.0` 这类范围在带预发布标识的版本上**匹配不上**（除非比较器自身也带预发布标识）。真正卡人的硬门禁是 `peerDependencies`（`dsh-app-boot` 用 `{includePrerelease:true}` 判定，失败 = 插件被**静默跳过**）。本版范围写成枚举式 `>=0.1.2-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.3.0`，实测 6 个 host（含 0.1.2-alpha.1 / 0.1.2 / 0.2.0-rc.2）全过。
+- **`dsh.bundle.patch` 必须写单个字符串**：0.1.x 的类型是 `patch: string`，数组会让 `path.join` 抛 TypeError；0.1.x 上 bundle 加载失败还会**直接崩**（0.2.0-rc.2 是跳过 + warning）。
+
+### 三、安全补全：三个 Web 端点原先谁都能调
+
+框架原话（另有插件头注释为证）：「Raw WebServer routes do not inherit Connection's authentication fence.」——路由既不鉴权也不发 CORS。本插件的 `/dsh-memory/{graph,logs,health}` 因此对任何能触达端口的人开放，`/health?llm=1` 还会**真发一次模型请求（花钱）**。新增 `lib/web-fence.js`（本机回环 + 同源，逐条对齐 `dsh-config-manager` 的 dsh-ssh fence）+ 安全响应头；`features.webFence` 默认 `loopback`，手机/局域网/反代访问要显式改 `off`。
+
+### 四、验证
+
+- `node test.mjs` **52 通过 / 0 失败**；24 个 `test-*.mjs` 里 22 个退出码 0（含 `test-inject-pipeline` 105/0 、`test-crash-safety` 10/0）。
+- `test-profile.mjs` 红（24/2）——**改动前的 HEAD 上同样红**，属历史遗留，不是本次引入。
+- 清单门禁用真门禁的调用形状在 6 个 host 上跑通（脚本在仓库外，一次性核验）。
+
+### 五、升级注意（契约变化）
+
+- `Config(x)` 的返回值现在是 cosmokit `Volatile`（整表 volatile 的必然结果）：读值要先解包——库内统一走 `getCfg()`/`plainConfig()`，测试里用 `cfgOf()`。
+- 工具改名 `memory_rewrite` → `memory_reprocess`。
+- 挂载 entry id：随包 patch 用 `memory`，历史手工行用 `dsh-memory`（客户端两个都认）；**两条挂载行不能同时存在**，切换前先删旧行。
+
 ## v0.13.3 — 提取不再「想那么多」：提示词瘦身 + 停掉白烧的续跑（2026-09-27）
 
 用户反馈：「要把提取记忆时的 AI 思考的过程缩短，实在是太长了，一般来说压缩都不需要那么多」，并要求先看清「发给提取 AI 的提示词和暴露出来的工具是哪些」。

@@ -5,14 +5,22 @@
  * externals（@deepseek-ai/*、react、react/jsx-runtime）由 web 端 module table 提供。
  */
 import { writeFileSync } from 'node:fs'
-// esbuild 优先从依赖解析（开源/CI）；作者本机开发环境无本地 esbuild，回退 harness 自带路径
+// esbuild 优先从依赖解析（开源/CI 走 devDependencies）。
+// 作者本机曾经硬编码一条 file:///D:/AItool/... 的绝对路径兜底——那违反本文档纪律
+// （禁止本机绝对路径入库），而且换机器就断。改成显式环境变量：谁的本机谁自己指。
 let build
 try {
   ;({ build } = await import('esbuild'))
 } catch (e) {
-  ;({ build } = await import('file:///D:/AItool/deepseek-harness/node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js'))
+  const fallback = process.env.DSH_MEMORY_ESBUILD
+  if (!fallback) {
+    console.error('❌ 找不到 esbuild。请在仓库根执行 `npm install`（推荐），')
+    console.error('   或把 esbuild 的 lib/main.js 绝对路径写进环境变量 DSH_MEMORY_ESBUILD 后重试。')
+    throw e
+  }
+  ;({ build } = await import(pathToFileURL(fallback).href))
 }
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const root = dirname(fileURLToPath(import.meta.url))

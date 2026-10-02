@@ -1,0 +1,34 @@
+# dsh-memory bundle patch —— 随包发布的 `dsh.bundle.patch` 层（v0.14.0 新增）
+#
+# 它的存在只为了一件事：**装即挂载**。
+#
+#   dsh plugin --profile <name> add dsh-memory@<version>
+#
+# 该命令会把 profile 的 `dsh.profile.bundles` 与已安装的包重新对账；看到本包 package.json
+# 里的 `dsh.bundle.patch` 声明，就把 `dsh-memory` 追加进 bundle 栈。profile 启动时自动 merge
+# 本文件（就是下面这一条 insert），等价于过去那行手工挂载 —— **不需要改 profile 里的任何文件**。
+#
+# ⚠️ 从手工挂载迁过来的人请注意：
+#   如果你以前是把包复制进 `profiles/<name>/node_modules/dsh-memory/`，再手改 profile 自己的
+#   `cordis.patch.yml` 加一条 insert（老 README 教的做法），**先删掉那条手工行再切 bundle 通道**。
+#   下面的 disabled 守卫只能挡住「另一条**不同 id** 的挂载行排在前面」的情况（聚合 bundle、
+#   或手工行用了别的 id）；同 id 的重复行仍会在 loader 层直接报 duplicate，这是 loader 的既定
+#   行为，不在这里兜。
+#
+# 条目 id 固定为 `memory`，它同时是三处的同一根线：
+#   1) `lib/compat.js` 的 SETTINGS_ENTRY_ID（宿主侧读设置表单用），
+#   2) `client/index.jsx` 的 ENTRY_ID（浏览器侧 configForms.get() 用），
+#   3) 0.2.0-rc.2 设置面按 profile entry id 定位的 namespace。
+#    任一处改了，设置页就会显示「不可用」。老手工挂载用的 id 是 `dsh-memory`，
+#    客户端把它留作兜底候选（见 client/index.jsx 的 ENTRY_ID_ALIASES）。
+- insert:
+    - id: memory
+      name: 'dsh-memory'
+      # 双挂载守卫：若 entry 列表里已经有**另一条**已启用的 dsh-memory 挂载
+      #（聚合 bundle 例如别人打的 web-ui-all，或手工行用了别的 id），本行自动退位，
+      # 避免同一个插件被挂两次（两套工具注册、两条写入管线、两份定时管家）。
+      #
+      # loader 求值本行时只能看见**排在本行之前**的条目，所以另一条挂载必须出现在前面；
+      # 反过来（本行在前、别处又挂一次）守卫看不见，会由 loader 以 duplicate 报错兜住 —— 与
+      # dsh-better-sidebar 的守卫同构，刻意保持一致，不引入第二套语义。
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === 'dsh-memory' && e.options.id !== 'memory' && !e.disabled)"

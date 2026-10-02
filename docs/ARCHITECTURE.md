@@ -165,8 +165,11 @@ query → tokenize（英文词≥3 + 中文 bigram）
 ⑦ 防循环窗口（maxRecentPerAgent）
 ```
 
-**会话预热**（`attachPreheatPipeline`，`agent/session-start`）：
-- 画像全 scope 直取（type=profile，跨项目公共层）→ 非画像先当前项目 scope、不足补 global → 组装带时间戳的预热块注入。
+**会话预热**（`attachPreheatPipeline`，**v0.14.0 双通道**）：
+- 内容：画像全 scope 直取（type=profile，跨项目公共层）→ 非画像先当前项目 scope、不足补 global → 组装带时间戳的预热块注入。
+- **通道 A（0.2.0-rc.2）**：`agent/created` → `agent.ctx.inject(['systemPrompt'])` → `systemPrompt.section({ name:'dsh-memory:preheat', order: getSectionOrder('FILE_REFERENCE'), text: () => 预热文本, interpolate:false })`。系统提示段落每步重算，不占对话回合、不需要 `step` 记账；`agent/disposed` 时 dispose 该 fiber。
+- **通道 B（0.1.x）**：老的 `agent/session-start` → `agent.inject(createUserMessage({ source:{kind:'plugin',plugin:'dsh-memory',form:'recall'}, content:[…] }))`（消息级注入）。
+- 择一判据：`features.preheatRoute`（`auto` 默认 / `prompt-section` / `message`）。`auto` 时看 `ctx` 上有没有 `systemPrompt` 服务——有走 A，没有交给 B；两条通道共用 `warmed` WeakSet 去重，保证同一 agent 只预热一次。
 
 **KV 缓存友好**：稳定块头 + 确定性排序 + append-only 尾部 + 溯源锚点 `#mem-id`；相同命中集 → 相同块 → 注入块自身成为可复用前缀。
 
@@ -191,15 +194,20 @@ query → tokenize（英文词≥3 + 中文 bigram）
 schema 默认值 ← 组合层（cordis.patch.yml config = base）← 用户层（GUI 写入 settings.yaml memory 段）
 ```
 
-- host 端：`apply` 内 `ctx.settings.register(settingsNamespace('memory'), Config, { base, applies:'live' })`——管线/工具统一经 `getCfg()` 每次读最新值
-- client 端：`ctx.settingsScope.bind({ namespace:'memory' })` 读写同一文档；`api.llm.providers()/models()` 动态预设下拉
+- **两代内核的"注册"是两件事**（`lib/compat.js` 的 `createSettingsFace()` 按服务能力择一）：
+  - **0.1.x**：`apply` 内 `ctx.settings.register(settingsNamespace('memory'), Config, { base, applies:'live' })`——命名空间是自由字符串。
+  - **0.2.0-rc.2**：`dsh-settings` 已删掉 `register`（`settingsNamespace` 也只剩类型、没有运行时值，静态命名导入会让主机启动即 exit 1）。"注册"= 导出 `Config`，面板按 **profile entry id** 列表单；插件侧做 `ctx.settings.configure({auto:false}, ctx.fiber)` 声明"自己管这个页面"，读值走 `describe({redactSecrets:true}).find(d => d.ns === entryId)?.value`。
+- **只有标了 `.volatile()` 的字段会出现在设置页**（`volatileForm()` 返回 undefined → 整个 entry 不产生 descriptor）→ `Config = volatileTable(z.object({...}))` **整表** volatile；代价是 `Config(x)` 解析出来是 cosmokit `Volatile`，读值要先解包。
+- **读值唯一入口**：`getCfg()` = `plainConfig(老内核 settingsScope.get() | 新内核 config.get() | 原始 config)`；`plainConfig()` 只在真含 `Volatile` 时重建对象，老内核上零开销。
+- client 端：**0.2.0-rc.2** 走 `ctx.configForms.get(entryId)`（entry id 候选 `memory` → `dsh-memory`，兼容两种挂载行）；**0.1.x** 回落 `ctx.get('settingsScope').bind({ namespace:'memory' })`；两代都拿不到则挂"不可用"桩（入口不消失）。`api.llm.providers()/models()` 动态预设下拉。
 - 密钥：引用 + 凭据文件（`~/.dsh/.credentials.yaml`，`api.credentials.set`）——不进 settings 文档、不进记忆库、界面只回"已配置"布尔
 - 开关矩阵：`autoWrite/valueGate/dedupMerge/preStepInject/manageTools/time/graph` + refiner/reranker/housekeeping/events/logging 各自开关——每项可关，关闭即降级路径
-- ⚠️ 前置：`memory` 命名空间需在 harness `apiproxy` 的 `WEB_SETTINGS_NAMESPACES` 白名单（升级 DSH 后重新添加，见 README）
+- ⚠️ 0.1.x 的前置：`memory` 命名空间需在 harness `apiproxy` 的 `WEB_SETTINGS_NAMESPACES` 白名单（0.1.2-alpha.1 起官方已自动暴露，无需白名单；0.2.0-rc.2 换了整套机制，见上）。
+- **Web 端点围栏**：`/dsh-memory/{graph,logs,health}` 由 `lib/web-fence.js` 挡——只认本机回环 + 同源请求（框架不替插件鉴权）。手机/局域网/反代访问要显式把 `features.webFence` 设为 `off`。
 
 ## 9. 集成点与工具面
 
-**DSH 集成点**：`session/event`（写入原料）· `agent/pre-step`（waterfall 注入）· `agent/session-start`（预热）· `agent.inject()`（form:'recall' append-only）· `ctx.settings`/`settingsScope` · `ctx.tools`（defineTool）· `ctx.llm.stream()`（refiner）· `ctx.credentials` · `ctx.workspaceRegistry`（scope fallback）· webServer 路由（`/dsh-memory/graph`、`/dsh-memory/logs`）· client `settings.section` / `sidebar.footer.action` 插槽 · `exports["./client"]` 双面插件。
+**DSH 集成点（v0.14.0 起按内核代际分支）**：`session/event`（写入原料）· `agent/pre-step`（waterfall 注入，追加 `decision.messages`）· **预热**：0.2.0-rc.2 用 `agent/created` + `systemPrompt.section()`，0.1.x 用 `agent/session-start` + `agent.inject()`（form:'recall' append-only）· **设置**：0.2.0-rc.2 用 `Config.volatile()` + `ctx.settings.describe/configure`，0.1.x 用 `ctx.settings.register(settingsNamespace(...))` · `ctx.tools`（defineTool）· `ctx.llm.stream()`（refiner）· `ctx.credentials` · `ctx.workspaceRegistry`（scope fallback）· webServer 路由（`/dsh-memory/graph`、`/dsh-memory/logs`、`/dsh-memory/health`，自带回环围栏）· client `settings.section` / `sidebar.footer.action` 插槽（两代同名，无需分支）· `exports["./client"]` 双面插件。
 
 **工具面（21 个，按域注册）**：
 

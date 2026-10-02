@@ -24,11 +24,11 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触�
 | **运行日志** | 背后运行了什么完全透明可见：写入/注入/检索/巡检/蒸馏/错误全链路埋点；GUI「记忆日志」面板（侧边栏入口 + 3s 轮询 + 筛选）+ `memory_logs` 工具 + `/dsh-memory/logs` API |
 | **LLM 蒸馏（refiner）** | 独立模型把高噪声轮次提取为自包含结论（决策/偏好/教训分类）+ **双输出（v0.10.0）**：`abstract` 抽象层级（principle=可复用原则/方法 / event=一次性事件产出）+ `theme` 名词标签（如"四级备考"）；失败自动降级规则路径；**v0.12.0 重做提取**：思考档（默认 `low`）+ **不设 token 上限**（`maxTokens: 0`）+ **2 分钟时间预算，掐断后带已写内容续跑**（断点续思）+ 先写 `analysis` 判断再产出 **0-3 条** items + 寒暄/空转轮次直接不记 |
 | **注入加权（v0.10.0）** | 检索双维 boost：画像 ×3 + principle ×1.5（方法优先）/ event ×0.7（强相关才注入）——"我怎么看待设计"优先于"设计了什么"；预热同序 |
-| **降级记忆重写 (v0.12.6)** | 提取瘫痪期间写下的「任务/结果」式降级产物，用修好的提取器**重新处理成正常记忆**（更新原条目、旧文进世界线可回滚；判定无价值的则归档）。工具 `memory_rewrite` 默认只预演，可分批续跑 |
+| **降级记忆重写 (v0.12.6)** | 提取瘫痪期间写下的「任务/结果」式降级产物，用修好的提取器**重新处理成正常记忆**（更新原条目、旧文进世界线可回滚；判定无价值的则归档）。工具 `memory_reprocess` 默认只预演，可分批续跑（**v0.14.0 从 `memory_rewrite` 改名**：那名字与 DSH 内核自带的 `memory_rewrite` 撞车，同进程里互相遮蔽） |
 | **会话级汇总 (v0.12.2)** | 逐轮提取之外再补一层："整段会话最后落在哪里"——攒够 N 轮把这段对话交回模型总结成 0-3 条结论（同一个决定被反复修改过，只写最后落定的那个）；与逐轮碎片互补 |
 | **纠正既有记忆 (v0.12.2)** | 提取时把库里已有的相关记忆一并交给模型判断：若这轮是在推翻/更正旧记，走**更新**分支（旧内容进世界线、可回滚），而不是新建一条与它并存的矛盾记忆；id 白名单校验，模型编的 id 改不动无关记忆 |
 | **遗忘曲线** | 24h 后指数衰减 + 访问加成，惰性批量执行 |
-| **会话预热** | `agent/session-start` 注入最近语义记忆（用户画像/项目背景） |
+| **会话预热** | 会话开场先把最近语义记忆（用户画像/项目背景）喂给模型。**v0.14.0 双通道**：0.2.0-rc.2 走 `agent/created` + `systemPrompt.section()`（每步重算、不占对话回合）；0.1.x 走老的 `agent/session-start` + `agent.inject()`（消息级）。按能力自动择一，可用 `features.preheatRoute` 强制 |
 | **KV 缓存友好注入** | 稳定块头 + 确定性排序 + append-only 尾部 + 溯源锚点（`#mem-id`） |
 | **GUI 设置面板** | 设置侧边栏「记忆」入口，全量参数 + 7 个功能开关 + 供应商/模型**动态预设下拉** + 密钥输入，改动 **live 生效** |
 
@@ -52,7 +52,7 @@ memory_versions          世界线版本链（回滚前查看）
 memory_rollback          回滚到历史版本（时间旅行）
 memory_housekeeping      管家巡检与治理（dryRun=false 执行：合并近乎重复 + 归档陈旧情景快照；consolidate=true 再做 LLM 归并）
 memory_archive           归档管理（查看被归档的记忆 / 一键恢复；归档不删除）
-memory_rewrite           降级记忆重写（v0.12.6：把提取瘫痪期的「任务/结果」产物交回修好的提取器重新处理成正常记忆；默认预演、可分批续跑）
+memory_reprocess         降级记忆重写（v0.12.6 起；v0.14.0 由 memory_rewrite 改名以避免与内核工具撞名：把提取瘫痪期的「任务/结果」产物交回修好的提取器重新处理成正常记忆；默认预演、可分批续跑）
 memory_theme_relabel     存量主题治理（簇级 LLM 重命名；dryRun 只报告 / recluster 先全量重聚类）
 memory_events            列出记忆事件（时间+因果聚簇；detect=true 强制重检测）
 memory_profile_distill   画像蒸馏（偏好/决策聚合为用户画像；需 refiner 启用）
@@ -100,21 +100,26 @@ client/logs.jsx        GUI 记忆日志面板
 ## 📦 安装
 
 ```sh
-# 方式一：官方插件命令（推荐）
-dsh plugin --profile web add dsh-advanced-memory   # 已发布到 npm，按包名安装
-# 开发期也可用本地路径：
-#   dsh plugin --profile web add ./dsh-memory
+# 方式一（推荐，0.2.0-rc.2 与 0.1.x 都适用）：官方插件命令
+# 本包声明了 dsh.bundle.patch（见 package.json），安装时自动把本包追加进 profile 的
+# dsh.profile.bundles —— 不需要手改 profile 的任何文件。
+dsh plugin --profile web add ./dsh-memory
 
-# 方式二：手动
-# 1) 复制本目录到 C:\Users\<user>\.dsh\profiles\web\node_modules\dsh-memory\
-# 2) cordis.patch.yml 添加 insert 条目
+# 方式二：手工挂载（老内核/老流程；0.2.x 上也能用，但**绝不能与方式一同时存在**）
+# 1) 复制本目录到 <profile>/node_modules/dsh-memory/
+# 2) 在 profile 的 cordis.patch.yml 里加一条 insert（见下）
 ```
 
-`cordis.patch.yml` 条目示例：
+> ⚠️ **先读：npm 上的名字与仓库对不上**
+> `dsh-memory` = 0.1.0（旧物）、`dsh-advanced-memory` = 0.9.17（落后仓库四个 minor），**本仓库这份 0.14.0 从未发布**。
+> 想装本仓库的版本，只能用本地路径（上面的 `add ./dsh-memory`）或先自己 `npm publish`。
+> 另外：方式一用的 entry id 是 `memory`（随包 patch 里写死的），方式二手工行历史上用的是 `dsh-memory`——**客户端两个 id 都认**，所以换挂载方式时设置面板不会掉，但两条挂载行同时存在会让 loader 报 duplicate，切换前请先删旧行。
+
+`cordis.patch.yml` 条目示例（仓库根的随包 patch 只有 `disabled` 守卫 + 这一条；手工挂载照抄 `insert` 部分即可）：
 
 ```yaml
 - insert:
-    - id: dsh-memory
+    - id: memory
       name: dsh-memory
       config:
         enabled: true
@@ -128,22 +133,30 @@ dsh plugin --profile web add dsh-advanced-memory   # 已发布到 npm，按包�
           graph: true
 ```
 
-### ℹ️ 设置面板可见性
+### ℹ️ 设置面板可见性（两代内核的机制不一样，v0.14.0 起两条都走通）
 
-GUI 设置面板依赖 `memory` 设置命名空间对 Web 客户端可见。**EAC 5.3 / 内核 0.1.2-alpha.1 起已官方支持**：`dsh-api-settings-controller` 的 `describe()` 自动暴露所有已注册命名空间（含第三方插件），无需任何白名单配置。
+设置面板出不出内容，取决于**内核那一代怎么"注册"设置**：
 
-> 旧版（<0.1.2-alpha.1）需要把 `memory` 加入宿主 apiproxy 的 `WEB_SETTINGS_NAMESPACES` 白名单（插件侧曾内置自愈 hack，v0.9.21 起已移除，见 `docs/CHANGELOG.md`）。
+| 内核 | 机制 | 本插件怎么适配 |
+|---|---|---|
+| **0.1.x**（≤0.1.7） | `ctx.settings.register(namespace, Config, {base, applies})`，命名空间是自由字符串 | 探测到服务上有 `register` 就照老样子调用（`ns = 'memory'`） |
+| **0.2.0-rc.2** | **没有 `register` 了**。entry 的 `Config` 就是注册；`describe()` 按 **profile entry id** 列出表单，且**只有标了 `.volatile()` 的字段会出现** | `Config` 整表标 `.volatile()`；entry id 取自己那条挂载行的 id（`memory`，兜底 `dsh-memory`）；客户端改走 `ctx.configForms.get(entryId)` |
+
+这就是 `lib/config.js` 里 `Config = volatileTable(z.object(...))` 和 `lib/compat.js` 存在的原因——**同一个包在两条内核线上都要能显示、能改**。仍然：0.2.0-rc.2 上**没有 volatile 标记的 entry 在设置页里根本不出现**（不是显示成灰）。
 
 ### 🔁 开发期部署（改完仓库 ≠ 线上生效）
 
-本插件是**手工挂载的 insert 插件**（在 profile 的 `node_modules` 里，不走 pnpm），所以改完仓库必须同步到部署副本：
+一条命令带来两种部署形态，别混：
+
+- **方式一（`dsh plugin add`）**：包作为 pnpm 依赖装在 profile 里，改仓库**不会**影响线上，要重新 `add`（或让 pnpm 走本地链接）。
+- **方式二（手工挂载）**：包是 profile `node_modules` 里的一个目录，改完仓库必须同步到部署副本 —— 用仓库自带的部署脚本（它也只会同步方式二的副本）：
 
 ```bash
 node tools/deploy.mjs           # 同步 lib/ 并复验 md5
 node tools/deploy.mjs --check   # 只比对（有漂移退出码 1，可用于收尾自检）
 ```
 
-> 2026-09-17 抓到一次真实漂移：仓库已含 v0.9.31 的降级保护（`degraded` 禁破坏性维度迁移 + 30s 超时），部署副本还停在 9/8 的旧版——于是向量表被 rule 兜底迁移成 256 维，**向量路实际已瘫**，日志里只有一行 warning。改 `lib/` 后先 `--check` 再收工。重启 DSH 才生效（客户端 `lib/client.js` 改动只需刷新页面）。
+> 2026-09-17 抓到一次真实漂移：仓库已含 v0.9.31 的降级保护（`degraded` 禁破坏性维度迁移 + 30s 超时），部署副本还停在 9/8 的旧版——于是向量表被 rule 兜底迁移成 256 维，**向量路实际已瘫**，日志里只有一行 warning。改 `lib/` 后先 `--check` 再收工。重启 DSH 才生效（客户端 `lib/client.js` 改动只需刷新页面 + 重建产物 `node build-client.mjs`）。
 
 ## ⚙️ 配置（settings.yaml 的 `memory` 段）
 

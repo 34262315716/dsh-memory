@@ -1,7 +1,7 @@
 {
   "name": "dsh-memory",
   "description": "Advanced auto-memory plugin for DSH: layered memory (episodic/semantic/profile) + knowledge graph + worldline versioning + vector/RAG retrieval + incremental graph building",
-  "version": "0.13.3",
+  "version": "0.14.0",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -12,15 +12,31 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "dsh": ">=0.1.2-alpha.1"
+    "dsh": ">=0.1.2-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.3.0",
+    "node": ">=22.19"
   },
   "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-slots"
       ],
       "immediately": true
+    },
+    "compatibility": {
+      "dsh": ">=0.1.2-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.3.0",
+      "dshReleases": {
+        "0.1.2-alpha.1": "compatible",
+        "0.2.0-rc.2": "compatible"
+      },
+      "node": ">=22.19",
+      "profiles": [
+        "web"
+      ]
     }
   },
   "license": "MIT",
@@ -35,17 +51,18 @@
     "worldline"
   ],
   "files": [
+    "cordis.patch.yml",
     "lib",
     "README.md",
     "LICENSE"
   ],
   "private": false,
   "peerDependencies": {
-    "@deepseek-ai/cordis": ">=0.1.0",
-    "@deepseek-ai/dsh-llm": ">=0.1.0",
-    "@deepseek-ai/dsh-settings": ">=0.1.0",
-    "@deepseek-ai/dsh-tools": ">=0.1.0",
-    "@deepseek-ai/schemastery": ">=0.1.0"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": ">=0.1.2-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.2-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.3.0",
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "dependencies": {
     "sqlite-vec": "^0.1.9"

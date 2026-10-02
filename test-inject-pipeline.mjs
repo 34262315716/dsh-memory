@@ -2,6 +2,15 @@
 // 用法: node test-inject-pipeline.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
 import { attachInjectPipeline, buildPinned } from './lib/pipelines/inject.js'
 import { Config, INJECT_PACE_LABELS, INJECT_PACE_STEPS, resolveStepInterval } from './lib/config.js'
+
+// v0.14.0：Config 是**整表** `.volatile()` 的 schema（0.2.0-rc.2 上设置面板能显示表单的前提），
+// 所以 `Config(x)` 解析出来的是 cosmokit `Volatile` 包装——读值前要先解包。
+// 这与 lib/index.js 的 `getCfg()`、lib/compat.js 的 `plainConfig()` 是同一条规则；
+// 本用例关心的是"schema 的默认值/取值/校验"，所以统一经 cfgOf() 读 plain。
+const cfgOf = (input) => {
+  const parsed = Config(input)
+  return typeof parsed?.get === 'function' ? parsed.get() : parsed
+}
 import { MemoryStore } from './lib/store.js'
 import { extractUserText, extractWorkText, renderPinned, stripInjectedNoise } from './lib/util.js'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
@@ -252,11 +261,11 @@ console.log('== 7e. 自定义档 stepInterval=12：数字真正说了算 ==')
 
 console.log('== 7f. schema：injectPace 默认平稳、stepInterval 上限 60（v0.11.2 由 10 放宽） ==')
 {
-  check('Config({}).injectPace 默认 steady', Config({}).injectPace === 'steady')
-  check('Config({injectPace:"lazy"}) 接受', Config({ injectPace: 'lazy' }).injectPace === 'lazy')
-  check('Config({injectPace:"乱写"}) 不抛错（回落由解析层兜底）', Config({ injectPace: '乱写' }).injectPace === '乱写')
-  check('Config({stepInterval:12}) = 12（旧上限 10 会把用户要的 12 判非法）', Config({ stepInterval: 12 }).stepInterval === 12)
-  check('Config({}).stepInterval 默认仍是 10（自定义档的起点）', Config({}).stepInterval === 10)
+  check('Config({}).injectPace 默认 steady', cfgOf({}).injectPace === 'steady')
+  check('Config({injectPace:"lazy"}) 接受', cfgOf({ injectPace: 'lazy' }).injectPace === 'lazy')
+  check('Config({injectPace:"乱写"}) 不抛错（回落由解析层兜底）', cfgOf({ injectPace: '乱写' }).injectPace === '乱写')
+  check('Config({stepInterval:12}) = 12（旧上限 10 会把用户要的 12 判非法）', cfgOf({ stepInterval: 12 }).stepInterval === 12)
+  check('Config({}).stepInterval 默认仍是 10（自定义档的起点）', cfgOf({}).stepInterval === 10)
   let rejected = false
   try { Config({ stepInterval: 61 }) } catch { rejected = true }
   check('Config({stepInterval:61}) 被拒（上限 60）', rejected)
@@ -464,9 +473,9 @@ console.log('== 12. 存储层：pinned 列 / 常驻清单 / 确定性顺序 ==')
 
 console.log('== 12b. schema：常驻旋钮默认值 ==')
 {
-  check('Config({}).pinnedLimit 默认 8', Config({}).pinnedLimit === 8)
-  check('Config({}).pinnedMaxTokens 默认 600', Config({}).pinnedMaxTokens === 600)
-  check('Config({pinnedLimit:20}).pinnedLimit = 20', Config({ pinnedLimit: 20 }).pinnedLimit === 20)
+  check('Config({}).pinnedLimit 默认 8', cfgOf({}).pinnedLimit === 8)
+  check('Config({}).pinnedMaxTokens 默认 600', cfgOf({}).pinnedMaxTokens === 600)
+  check('Config({pinnedLimit:20}).pinnedLimit = 20', cfgOf({ pinnedLimit: 20 }).pinnedLimit === 20)
   let rej = false
   try { Config({ pinnedLimit: 0 }) } catch { rej = true }
   check('pinnedLimit=0 被拒（至少 1 条）', rej)
