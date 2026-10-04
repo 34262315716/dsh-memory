@@ -75,9 +75,13 @@ const RERANKER_FIELDS = [
 /** 图谱力导向字段（graphView 子对象）。 */
 const GRAPH_VIEW_FIELDS = [
   ['spring', '弹簧强度', '连线牵引力（0.02~0.5，默认 0.13；越大团越紧）'],
-  ['repulsion', '斥力倍率', '节点间斥力（0.2~2，默认 1；越大越松散）'],
   ['damping', '速度阻尼', '运动衰减（0.05~0.9，默认 0.3；越大越稳但更慢收敛）'],
-  ['gravity', '中心引力', '孤立节点回中心拉力（0~0.05，默认 0.005）'],
+  ['field', '邻域场强度', '半径内所有节点的引/斥强度倍率（0~3，默认 1；0 = 关掉场内力，只剩弹簧）'],
+  ['spacing', '平衡间距', '力曲线的零点 = k×此值：比它近就斥、比它远就吸（1~4，默认 1.2；调大更松散，但点少时画面会缩得更小）'],
+  ['attract', '远场引力峰值', '越过平衡距离后的引力上限（0~1，默认 0.06；**必须小**，调大会整盘塌成密实圆盘；0 = 只剩斥力）'],
+  ['maxSpeed', '单帧速度上限', '数值安全网，防"乱飞"（1~20，默认 4；不改变平衡位置，只截断瞬态）'],
+  ['range', '邻域半径', '每个节点的影响半径 = k×此值，半径外互不影响（0.5~12，默认 4.5；调小更局部、更易分成小团）'],
+  ['wobble', '常活微动', '收敛后绕平衡点的缓慢游走幅度（0~0.2，默认 0.04；0 = 完全静止）'],
 ]
 
 /** 管家字段（housekeeping 子对象）。 */
@@ -100,7 +104,7 @@ const LOGGING_FIELDS = [
   ['maxRows', '日志保留条数', '惰性裁剪上限（100~10000，默认 2000）'],
 ]
 
-const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'repulsion', 'damping', 'gravity', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays', 'gapHours', 'maxRows', 'maxTokens', 'timeBudgetMs', 'maxContinuations'])
+const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'field', 'spacing', 'attract', 'maxSpeed', 'damping', 'range', 'wobble', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays', 'gapHours', 'maxRows', 'maxTokens', 'timeBudgetMs', 'maxContinuations'])
 
 /**
  * 宿主设计令牌（主题包注入 :root 的 --dsw-alias-*）。
@@ -1150,18 +1154,28 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         ))}
       </div>
 
-      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-        <button onClick={save} disabled={!dirty || invalid || saving || !writable || (embChanging && !embedAck)}
-          style={{ ...primaryBtn, cursor: dirty ? 'pointer' : 'default' }}>
-          {saving ? '保存中…' : '保存'}
-        </button>
-        <button onClick={reset} disabled={!dirty}
-          style={{ ...ghostBtn, cursor: dirty ? 'pointer' : 'default' }}>
-          重置
-        </button>
+      {/* v0.14.1：本面板有十几个分组，保存/重置原先挂在最底部 —— 只看到「基础配置」时
+          会以为"这里没有保存按钮"。改成吸底工具条：滚到哪都在视野内；
+          提示消息一并挪进来，否则会被工具条压住。 */}
+      <div style={{
+        position: 'sticky', bottom: 0, zIndex: 3,
+        marginTop: 16, padding: '10px 0 8px',
+        background: T.fieldBg, borderTop: `1px solid ${T.line}`,
+      }}>
+        {invalid ? <p style={{ color: T.warnText, fontSize: 12, margin: '0 0 6px' }}>⚠ 数值字段必须填数字</p> : null}
+        {msg ? <p style={{ fontSize: 12, margin: '0 0 6px' }}>{msg}</p> : null}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button onClick={save} disabled={!dirty || invalid || saving || !writable || (embChanging && !embedAck)}
+            style={{ ...primaryBtn, cursor: dirty ? 'pointer' : 'default' }}>
+            {saving ? '保存中…' : '保存'}
+          </button>
+          <button onClick={reset} disabled={!dirty}
+            style={{ ...ghostBtn, cursor: dirty ? 'pointer' : 'default' }}>
+            重置
+          </button>
+          {dirty ? <span style={{ color: T.sub, fontSize: 12 }}>有未保存的改动</span> : null}
+        </div>
       </div>
-      {invalid ? <p style={{ color: T.warnText, fontSize: 12, margin: '6px 0 0' }}>⚠ 数值字段必须填数字</p> : null}
-      {msg ? <p style={{ fontSize: 12, margin: '6px 0 0' }}>{msg}</p> : null}
     </div>
   )
 }

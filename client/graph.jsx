@@ -7,6 +7,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { MemoryLogPanel } from './logs.jsx'
 import { themeBounds, clusterByDistance, densityCore, convexHull, padConvexPolygon, polygonContains } from './graph-geometry.js'
 import { layoutSignature, loadLayout, saveLayout, restoredRatio } from './layout-cache.js'
+// v0.15.0：力模型整体搬进 graph-force.js（纯函数、可在 Node 里断言）。这里是它的唯一消费者。
+import { pairForce, springForce, recenter, clampSpeed, seedLayout, FIELD_DEFAULTS } from './graph-force.js'
 /** 主题色板：色相均匀 14 色 + 相邻明度交替（奇亮偶暗）。
  *  深色背景下高辨识；环形布局里相邻扇区一个亮一个暗，天然错开。 */
 function themePalette(n) {
@@ -98,38 +100,16 @@ function agoText(ts, now = Date.now()) {
   return `${Math.floor(d / 365)} 年前`
 }
 
-/** 主题环形布局：每个主题一个扇区，组内节点均匀分布；返回 id → [x, y]。 */
-function layoutNodes(data, W, H) {
-  const cx = W / 2, cy = H / 2
-  const themes = data.themes.length > 0 ? data.themes : ['(未归类)']
-  const groups = new Map()
-  for (const n of data.nodes) {
-    const t = n.theme || '(未归类)'
-    if (!groups.has(t)) groups.set(t, [])
-    groups.get(t).push(n)
-  }
-  const positions = new Map()
-  let idx = 0
-  for (const [theme, members] of groups) {
-    const ti = themes.indexOf(theme)
-    const base = ti >= 0 ? (ti / themes.length) * 2 * Math.PI : (idx / groups.size) * 2 * Math.PI
-    const spread = ((2 * Math.PI) / themes.length) * 0.88
-    const R = 200
-    members.forEach((n, i) => {
-      const ang = members.length === 1
-        ? base
-        : base - spread / 2 + (spread * i) / (members.length - 1)
-      const r = R + (i % 4) * 24
-      positions.set(n.id, [cx + r * Math.cos(ang), cy + r * Math.sin(ang)])
-    })
-    idx++
-  }
-  return { positions, groups }
-}
+/** 初始布局（v0.15.1）：**连通分量成盘 + 度数高者靠中心**，由 graph-force.js 的 seedLayout 负责。
+ *  旧的"主题环形布局"（所有节点铺在一个半径 200px 的环上）已删除：857 个点挤在周长 ≈1257px
+ *  的环上意味着局部间距 ~1.5px，近场斥力会把它们弹到几千 px 外，而**局部场对已经跑出半径的
+ *  点零作用** → 它们永远回不来，就是用户截图里的「大量空白 + 外圈孤岛」。详见 seedLayout 的注释。 */
 
 /** Obsidian 风格力导向图谱（Canvas 渲染）：
- *  物理：斥力 + 弹簧 + 中心引力 + 速度阻尼；alpha 冷却到阈值后停帧（省 CPU）
- *  交互：拖节点（固定 + 重新加热）、拖背景平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击选中
+ *  物理（v0.15.1 重写，见 graph-force.js）：**邻域场**（半径内每对节点都有引/斥，一条公式 pairForce）
+ *       + 边的弹簧（springForce）+ 速度阻尼 + 单帧限速 + 常活微动；`recenter` 只做整体平移（不是力），
+ *       **没有任何"朝某个点拉"的中心引力**。实时循环常开，α 恒为 0.4（静息与拖动同一工作点）。
+ *  交互：拖节点（降阻尼 + 1 环速度前馈）、拖背景平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击选中
  *  性能：单 Canvas 每帧整绘（数百节点 <5ms）；选中/hover 经 ref 传入，组件零重渲染
  */
 const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef, themeFocusRef }) {
@@ -142,7 +122,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     if (!canvas) return
     const ctx = canvas.getContext("2d")
     const dpr = window.devicePixelRatio || 1
-    const P = physics ?? { spring: 0.13, repulsion: 1, damping: 0.3, gravity: 0.005 }
+    // v0.15.0：力模型参数集中到 graph-force.js 的 FIELD_DEFAULTS（唯一出处），
+    // 兜底值与设置页默认值不会再各写一份、各漂各的。
+    const P = physics ?? { ...FIELD_DEFAULTS, themeShape: 'circle', themeScope: 'focus' }
     const resize = () => {
       const rect = canvas.parentElement.getBoundingClientRect()
       canvas.width = Math.max(1, rect.width) * dpr
@@ -159,10 +141,10 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const colorOf = (theme, type) => pickColor(data.themes, theme, type)
     const degree = new Map()
     for (const e of data.edges) { degree.set(e.from, (degree.get(e.from) ?? 0) + 1); degree.set(e.to, (degree.get(e.to) ?? 0) + 1) }
-    // 初始位置（v0.10.7）：**优先复用上次收敛坐标**（localStorage，按 id 取交集）——
-    // 打开即落在"全局平衡"位置，不再每次从环形初位重跑一遍迁移；新节点（缓存里没有的）
+    // 初始位置（v0.15.1）：**优先复用上次收敛坐标**（localStorage，按 id 取交集）——
+    // 打开即落在"全局平衡"位置，不再每次从种子重跑一遍迁移；新节点（缓存里没有的）
     // 落在同主题已恢复节点的质心附近，再由力导向微调，平滑接纳新记忆。
-    const init = layoutNodes(data, W(), H())
+    const init = seedLayout(data, W(), H(), P)
     const sig = layoutSignature(data)
     const cached = loadLayout()
     const cacheMap = cached?.map ?? null
@@ -201,10 +183,14 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       neighbors.get(e.b.id).add(e.a.id)
     }
 
-    // ---- 力导向（平衡设计：连线多不挤团、连线少不漂远） ----
-    //  斥力：Fruchterman k²/d + 距离截断 2.2k（远距零斥力 → 孤立节点不被无限推远）
-    //  弹簧：目标长度度感知（枢纽节点周围留更大空间）+ 强度 0.07（更紧）
-    //  中心引力：0.005 线性（孤立节点回归中心；被拖拽节点豁免）
+    // ---- 力导向（v0.15.1：**邻域场**） ----
+    //  物理全在 graph-force.js，这里一行都不重复实现：
+    //    pairForce(d,k,P)  —— 半径内**每一对**节点之间的一条公式：近处斥、远处（很轻地）吸，
+    //                        零点 = spacing·k；两个边界都硬归零，不带到半径外
+    //    springForce(d,k,P) —— 边的弹簧（静止长度 0.9·dEq，簇才像簇）
+    //    clampSpeed —— 单帧限速；recenter —— 质心平移（**不是力**）
+    //  ★ 这里既没有"中心引力"，也没有 v0.14.x 那三条按度数加权的特权方向（度只影响节点半径的
+    //    视觉大小，不影响任何力）。
     let alpha = 0.45, raf = 0   // 初始 α 调低：首帧运动更温和（配合预热，打开即稳定全景）
     // 主题区域聚簇态（v0.10.6）：自适应门槛缓存 + 帧计数（避免逐帧重算中位边长的开销与抖动）
     let clusterR = 0
@@ -231,44 +217,28 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const regionSmooth = new Map()   // 区域形状的时间平滑状态（v0.10.8）：key = planKey#i
 
     const k = Math.sqrt((W() * H()) / Math.max(nodes.length, 1))
-    const maxDeg = Math.max(...nodes.map((n) => n.degree), 1)
+    // v0.15.0：maxDeg 随"度数加权"一起删除 —— 力模型不再关心度数（每一对节点平等），
+    // 节点半径自带的 degree 项（nodeRadiusOf）纯属视觉。
     /** 节点世界半径（v0.10.11：**不随缩放变化**的布局常量）。原式带了 /√k：
      *  半径随缩放漂移 → "节点不重合"无法成为布局约束（放大就重叠），观感也会忽大忽小。
      *  现在半径是布局空间常量，配合下面的碰撞规避给出硬保证：任何缩放倍率下都不重合。 */
     const nodeRadiusOf = (n) => 7 + Math.min(n?.degree ?? 0, 14) * 0.9
-    const REP_C = 8              // 1/d² 斥力常数（×k²）——间距量级由它决定（实测 8 → 近邻 p5 ≈ 60）
+    // v0.15.1：REP_C 这类力常数已全部搬到 graph-force.js（唯一定义处），这里不再留一份影子常量。
     const COLLIDE_GAP = 6        // 节点之间的最小空隙（世界坐标）；力已负责间距，这里只兜底"绝不重合"
     const collideCell = 2 * nodeRadiusOf({ degree: 14 }) + COLLIDE_GAP
     let dragNode = null
-    // 拖动作用域（v0.10.10）：拖动只影响图距离 ≤2 的邻域——范围外节点冻结，
-    // 避免"拖一个节点导致全局扰动"（用户实拍反馈）。
-    const dragScope = new Set()
-    const setDragScope = (node) => {
-      dragScope.clear()
-      if (!node) return
-      dragScope.add(node.id)
-      let frontier = [node.id]
-      for (let d = 0; d < 2; d++) {
-        const next = []
-        for (const id of frontier) {
-          for (const nb of (neighbors.get(id) ?? [])) {
-            if (!dragScope.has(nb)) { dragScope.add(nb); next.push(nb) }
-          }
-        }
-        frontier = next
-      }
-    }
-    // 主题锚点（v0.10.10）：每个主题"有连接的成员"的质心——零连接记忆向它靠拢，
-    // 让散落的同主题记忆真的聚在一起（也顺手打破"同心环"观感）。
-    const themeAnchor = new Map()
-    for (const n of nodes) {
-      if (!n.theme || n.degree === 0) continue
-      const a = themeAnchor.get(n.theme) ?? { x: 0, y: 0, n: 0 }
-      a.x += n.x; a.y += n.y; a.n++
-      themeAnchor.set(n.theme, a)
-    }
-    for (const [t, a] of themeAnchor) themeAnchor.set(t, { x: a.x / a.n, y: a.y / a.n })
-    /** 确定性哈希（0..1）：同一 id 永远同一值——孤立节点的回中力/落点据此微分化，避免"同心环"。 */
+    // 被拖节点的上一帧位置：用来算"这一帧指针把它搬了多远"，作为 1 环邻居的速度前馈。
+    const dragPrev = { x: 0, y: 0 }
+    // 拖动模型（v0.14.3 重做）：**没有作用域、不冻结任何节点**。
+    //   · 被拖节点是"运动学"物体：位置只由指针写死（速度清零、碰撞也不推它）；
+    //   · 其余节点全程照常受力 —— 扰动沿弹簧网逐跳传播，阻尼让它自然衰减为涟漪，
+    //     近处跟得多、远处几乎不动，但**不存在一圈僵住不动的边界**；
+    //   · 1 环邻居额外吃一份"拖动速度前馈"，起手就跟（注入的是速度而不是位置，边照样能拉长）。
+    // v0.10.10 的"图距离 ≤2 才动、范围外 v=0 冻结"会在图上留下一圈肉眼可见的僵死边界，
+    // 用户实拍否掉了它：拖动应当是弹簧的涟漪，不是拖着一块焊死的铁板。
+    // v0.15.0：主题锚点（零连接节点向本主题质心靠拢）删除 —— 又一种"朝某个特定点拉"的
+    //   特权方向。零连接的点现在由邻域场自然吸附（半径内谁近就先被谁拉），不需要第二套规则。
+    /** 确定性哈希（0..1）：同一 id 永远同一值——微动相位、碰撞同位置破局据此微分化。 */
     const hash01 = (id) => {
       let h = 0x811c9dc5
       const s2 = String(id)
@@ -281,9 +251,35 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     const step = (fixedAlpha) => {
       if (typeof fixedAlpha === "number") alpha = fixedAlpha
       else alpha += (0 - alpha) * 0.028
-      // 拖动期间维持模拟活跃（alpha 地板）：弹簧持续牵引，邻居弹性跟随拖点
-      if (dragNode) alpha = Math.max(alpha, 0.15)
-      // 斥力（带截断与最小距离钳制）
+      // ★ v0.15.1：**拖动不再单独"升温"**。α 是"工作点"，不是"温度"：
+      //   旧代码静息 α=0.02、拖动抬到 0.4（相差 20 倍）—— 静息时布局被冻在"碰撞约束 + 弹簧"
+      //   挤出的非平衡态上，一拖动等于全场力同时放大 20 倍，于是"拖一个点，盘里的球乱飞"。
+      //   现在静息地板就是 0.4（见实时循环里的 alpha 地板），两者**同一个工作点**；
+      //   拖动只做两件事：阻尼减半（让涟漪传出去）+ 给 1 环邻居速度前馈。
+      //   布局本身已经停在力平衡处（净力 ≈ 0），所以抬高工作点不会"释放"任何存量不平衡。
+      // 拖动前馈（v0.14.2）：被拖节点这一帧被指针搬了多远。1 环邻居据此**起手就跟**，
+      // 不必等弹簧把拉伸量攒起来（旧实现只有弹簧，所以"拉很长才有明显加速"）。
+      let dragDX = 0, dragDY = 0
+      if (dragNode) {
+        dragDX = dragNode.x - dragPrev.x; dragDY = dragNode.y - dragPrev.y
+        dragPrev.x = dragNode.x; dragPrev.y = dragNode.y
+      }
+      // ★ 邻域半径场（v0.14.5，用户 m01095）
+      //   模型（用户原话）：「每一个点以它自己为中心向周围划定一个半径，**半径内的点会影响这个点**，
+      //   每一个点都是这样」—— 影响是**局部**的、**各向同性**的、**每个点平等**的：
+      //     · 半径 R 内：每一对节点之间都有一对沿连线的力（近处斥、中距离吸），与有没有边无关；
+      //     · 半径 R 外：**互不影响**（下面直接剔除，不参与任何力的计算）。
+      //   与旧模型的差别：旧式斥力是**全对、无截断**的（一个点会被 800px 外的点推），
+      //   引力只沿"有边"的方向，另有全场朝同一个点的中心引力 —— 于是力的"方向"只有那三种。
+      //   现在每个点只跟**自己半径内的邻居**发生关系，方向是 360° 连续的，没有特权方向。
+      //   R = k×range（默认 4.5k；按当前数据 k≈37px → R≈168px）。
+      // 半径是**参数**：R = k×range（默认 4.5k；按当前数据 k≈37px → R≈168px）。
+      // 曲线本身在 graph-force.js 的 pairForce() 里，可在 Node 里直接求值（test-graph-field.mjs）。
+      const R = k * (P.range || 4.5)
+      const R2 = R * R
+      // 场内**任意一对**节点的力：近域斥、越过平衡距离后吸、半径外严格为 0。
+      // 全部由 graph-force.js 的 pairForce() 决定 —— **一条公式**，不再是"斥力一条 + 引力一条"
+      // 拼起来再指望它们碰巧抵消在某个位置。这里只负责：乘降温系数 α、拖动期折减、沿连线施加。
       for (let i = 0; i < nodes.length; i++) {
         const a = nodes[i]
         for (let j = i + 1; j < nodes.length; j++) {
@@ -291,51 +287,70 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           let dx = a.x - b.x, dy = a.y - b.y
           let d2 = dx * dx + dy * dy
           if (d2 < 1e-6) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1 }
+          // 半径外互不影响：最便宜的剔除（d² ≥ R² 直接跳过，连 sqrt 都不做）
+          if (d2 >= R2) continue
           const d = Math.sqrt(d2)
-          // 斥力（v0.10.12 重写）：**每一对节点都是独立的斥力源**——全对 1/d² 定律，**不做距离截断**。
-          // 旧实现只在 2.2k 内生效、且被 cap 到 0.6k，于是近处推不开、远处没有力：
-          // 结果是"一团一团贴着的小块 + 大片空白"（用户实拍：节点过于靠近）。
-          // 1/d² 近处强推、远处仍留微力，间距由力平衡自然长出（实测近邻间距 p5 16px → 60px）。
-          const dd = Math.max(d, 12)   // 软化核心：12px 内不再增长，避免数值爆炸
-          // 拖动期间斥力减半：跟随交给弹簧，斥力只做让位——防团内连锁推挤振荡
-          const f = (P.repulsion * REP_C * k * k) / (dd * dd) * alpha * (dragNode ? 0.45 : 1)
+          // 拖动期只做一件事：与被拖节点相关的对少推 88%（否则指针会被自己的斥力顶开）。
+          const dragPush = dragNode && (a === dragNode || b === dragNode) ? 0.12 : 1
+          const f = pairForce(d, k, P) * alpha * dragPush
           a.vx += (dx / d) * f; a.vy += (dy / d) * f
           b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
         }
       }
-      // 弹簧（度感知目标长度：连线越多间距越大，防挤团）
+      // 边弹簧（graph-force.js 的 springForce）：静止长度 k·1.15，**统一刚度**。
+      // 长度不写死：受力时由力的平衡决定 —— 拉得越狠伸得越长，松手自己弹回（用户 m00958 要的弹簧感）。
+      // 度数不再影响刚度：按"每对平等"的模型，枢纽的辐条不该比别人的硬。
       for (const e of edges) {
         const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y
         const d = Math.sqrt(dx * dx + dy * dy) || 1
-        const degFactor = 1 + 0.5 * Math.sqrt(((e.a.degree + e.b.degree) / 2) / maxDeg)
-        const target = k * 1.15 * degFactor
-        const f = (d - target) * P.spring * alpha
+        const f = springForce(d, k, P) * alpha
         e.a.vx += (dx / d) * f; e.a.vy += (dy / d) * f
         e.b.vx -= (dx / d) * f; e.b.vy -= (dy / d) * f
       }
-      // 中心引力（增强，孤立节点不漂远）
-      // 拖动期间强阻尼爬行：邻居缓慢平滑漂向拖点（无惯性回摆 = 无抖动）；松手恢复弹性
-      const damp = dragNode ? 0.11 : P.damping
+      // 节点循环：只做「阻尼 → 常活微动 → 积分」。**这里没有任何位置力** ——
+      // v0.15.0 删掉了中心引力与主题锚点，回到 d3-force 的配方：
+      // link（弹簧）+ manyBody（带 distanceMax 的邻域场）+ collide + 整体平移归心。
       for (const n of nodes) {
+        // 被拖节点：运动学物体 —— 位置由指针写死（onMove），这里只清速度，不让任何力推它。
         if (n === dragNode) { n.vx = 0; n.vy = 0; continue }
-        // 拖动作用域外冻结（v0.10.10）：拖动只扰动邻域
-        if (dragNode && !dragScope.has(n.id)) { n.vx = 0; n.vy = 0; continue }
-        // 度感知回中力（v0.10.7）：零连接记忆曾被斥力推到外围结成光环。
-        // 再叠加两项（v0.10.10）打破"同心环"观感：
-        //   · 每节点回中力按 id 确定性微差（0.65~1.35）→ 平衡半径不再一致，自然散开成云；
-        //   · 零连接记忆额外吸向**本主题已连接节点的质心** → 散落的同主题记忆聚到一起。
-        const gw = (n.degree === 0 ? 3.2 : (n.degree === 1 ? 1.8 : 1)) * (0.65 + 0.7 * hash01(n.id))
-        n.vx += (W() / 2 - n.x) * P.gravity * gw * alpha
-        n.vy += (H() / 2 - n.y) * P.gravity * gw * alpha
-        if (n.degree === 0 && n.theme) {
-          const an = themeAnchor.get(n.theme)
-          if (an) {
-            const f = 0.008 * alpha
-            n.vx += (an.x - n.x) * f
-            n.vy += (an.y - n.y) * f
-          }
+        // 拖动期间全场用**更轻的阻尼**（0.6：每帧保留 60% 速度）。静止值 0.3 太黏 ——
+        // 弹簧力每帧被抹掉 70%，牵引根本传不出一跳，看起来就是"只有身边动、其余僵住"。
+        // 轻阻尼让扰动像涟漪一样沿边逐跳衰减地传开：距离是**连续**变化的，没有那条硬边界。
+        // 1 环邻居再额外吃 25% 的拖动位移（速度前馈）：起手就跟；注入的是速度不是位置，
+        // 所以边依然会被拉长（保住弹簧感）。
+        let damp = P.damping
+        if (dragNode) {
+          damp = 0.6
+          if (neighbors.get(dragNode.id)?.has(n.id)) { n.vx += dragDX * 0.25; n.vy += dragDY * 0.25 }
+        }
+        // ★ v0.15.0：**删掉中心引力与主题锚点**。两者都是"全场朝同一个点拉"的特权方向，
+        //   正是"拖一个点 → 所有点往中间跑"的元凶：引力强度 ∝ 到画布中心的距离，平时被阻尼
+        //   冻在"力不平衡但不动"的静默态里，拖动一旦把 α 抬到 0.4 就全场一起收缩。
+        //   替代品不是"更弱的中心力"，而是**整体平移归心**（recenter，见 step 末尾）：
+        //   d3-force 的 forceCenter 正是这么做（源码里一个力都没施加，只有 node.x -= sx），
+        //   数学上不可能改变形状、不可能收缩 —— 也就不可能再"偷"出一个约束力。
+        //   同时删掉度数加权（degNorm/jitter/gw）：按"每一对节点平等"的模型，
+        //   度数是拓扑的自然结果，不该被特判成位置偏好。
+        // ★ v0.14.4 常活微动（用户 m01002：「我不拉的时候图谱又不动了，这也是我不想的」）
+        //   力导向收敛后每个节点的净力都 ≈ 0 —— 图"死"在平衡点上（循环还在跑，但没有力了）。
+        //   这里加一层**零均值**的低频扰动：相位由 id 哈希决定、两条正交正弦（周期 16s/22s），
+        //   节点绕着平衡点缓慢游走（±10~20px）。时间平均为 0 → 平衡点不变、布局不会被带偏；
+        //   是"缓慢游走"而不是 v0.9.13 那种高频抖动（那个被用户否过）。
+        //   ★ v0.15.1 改判据：α 现在**常驻 0.4**（拖动与静息同一个工作点），不能再拿"α 小"当
+        //   "已静止"的信号 —— 否则 calm 恒为 0，图会彻底死住。改用**交互状态**做闸门：
+        //   预热求平衡、拖动、背景平移期间关掉，其余时间常开。幅度/周期/相位都不变，
+        //   其稳态速度 ≈ 0.057px/帧 ≈ 3.4px/s（与 α 无关，实测过）。P.wobble = 0 可完全关掉。
+        const calm = (!dragNode && !preheating) ? 1 : 0
+        if (P.wobble > 0 && calm > 0) {
+          const tms = performance.now()
+          const ph = hash01(n.id) * 6.283185307
+          n.vx += Math.sin(tms * 0.0004 + ph) * P.wobble * calm
+          n.vy += Math.cos(tms * 0.00029 + ph * 1.618) * P.wobble * calm
         }
         n.vx *= damp; n.vy *= damp
+        // 单帧速度上限（v0.15.1）：数值安全网。近场斥力 ∝ 1/u²，两点贴到一起时单帧冲量可以极大；
+        // 上限让"乱飞"在物理上不可能发生，且**不改变平衡位置**（只截断瞬态、不截断稳态）。
+        clampSpeed(n, P.maxSpeed)
         n.x += n.vx * 1.5; n.y += n.vy * 1.5
       }
       // 碰撞规避（v0.10.11）：节点**不得重合**——位置式硬约束（网格加速，O(n)）。
@@ -350,7 +365,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       }
       for (const n of nodes) {
         const gx0 = Math.floor(n.x / collideCell), gy0 = Math.floor(n.y / collideCell)
-        const frozenN = dragNode && n !== dragNode && !dragScope.has(n.id)
+        const fixedN = n === dragNode   // 被拖节点不被碰撞推开：它的位置归指针管（推它会跟指针打架、画面抖）
         for (let gx = gx0 - 1; gx <= gx0 + 1; gx++) {
           for (let gy = gy0 - 1; gy <= gy0 + 1; gy++) {
             const arr = grid.get(gx + ',' + gy)
@@ -365,14 +380,19 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
               if (d < 1e-6) { dx = hash01(n.id) - 0.5; dy = hash01(m.id) - 0.5; d = Math.hypot(dx, dy) || 1 }
               const push = (minD - d) * 0.5 * 0.8       // 各推一半、留 20% 欠松弛：既快速分离又不抖
               const ux = dx / d, uy = dy / d
-              const frozenM = dragNode && m !== dragNode && !dragScope.has(m.id)
-              if (!frozenN) { n.x -= ux * push; n.y -= uy * push }
-              if (!frozenM) { m.x += ux * push; m.y += uy * push }
+              const fixedM = m === dragNode
+              if (!fixedN) { n.x -= ux * push; n.y -= uy * push }
+              if (!fixedM) { m.x += ux * push; m.y += uy * push }
               if (n !== dragNode && m !== dragNode) { n.vx *= 0.6; n.vy *= 0.6; m.vx *= 0.6; m.vy *= 0.6 }
             }
           }
         }
       }
+
+      // 整体平移归心（d3-force forceCenter 语义，**不是力**）：把质心挪回画布中心。
+      // 一个力都不施加 → 不可能改变形状、不可能让图收缩；它只保证图不飘出视野。
+      // 力模型里从此没有"中心"这个概念，位置归中纯粹是渲染层的事。
+      recenter(nodes, W() / 2, H() / 2)
     }
 
     // ---- 自适应视野（fit-to-view） ----
@@ -421,22 +441,27 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     //    - 命中缓存（≥85% 节点有旧坐标）：坐标已是上次收敛态 → 只做几步微松弛，打开即"全局平衡"；
     //    - 未命中：把力导向**跑到收敛**（alpha ≤ 0.003，上限 2500 步）再落盘 —— 等于"把平衡跑在打开之前"。
     let warm = 0
+    // v0.15.1：预热（求平衡）期间关掉常活微动 —— 别把噪声写进"平衡态"，也让上面那些
+    // 固定 α 的松弛步只做纯力学。实时循环一开就置回 false（见下面 fitToView 之前）。
+    let preheating = true
     if (restoreOk) {
       alpha = 0.02
       for (let i = 0; i < 24; i++) step()
     } else {
       // 收敛策略（v0.10.10 修正，两段式）：
       // 原实现让 `step()` 衰减 alpha —— 速度变小只是因为"力被 alpha 杀死了"，布局远未平衡，
-      // 于是把"环形初位 + 一点扰动"当成平衡冻进缓存（用户实拍：节点像按顺序排在同心的圈上）。
+      // 于是把"种子初位 + 一点扰动"当成平衡冻进缓存（用户实拍：节点像按顺序排在同心的圈上 ——
+      // 旧版种子确实是把所有节点铺在一个半径 200px 的环上，v0.15.1 换成分量成盘了）。
       // 物理事实：平衡位置与 alpha 无关（所有力同倍缩放），alpha 只决定步长。
       // 故：① 大步快铺（固定 0.45）把结构铺开；② 慢衰减收尾（×0.985/步）让布局真正落到力平衡。
       // 实测（真实快照 490 节点）：800 步 / 约 250ms，一次收敛后落盘，后续打开直接复用。
       for (let i = 0; i < 400; i++) { step(0.45); warm++ }
       for (let i = 0; i < 400; i++) { step(0.45 * Math.pow(0.985, i + 1)); warm++ }
-      alpha = 0.15   // 交给实时循环继续缓慢律动（而不是从 0.45 猛冲）
+      alpha = 0.4   // 交给实时循环的工作点（v0.15.1：静息与拖动同一个 α，不再有 20 倍跳变）
       saveLayout(sig, nodes)
     }
     // 2) 立即全景（不再等模拟收敛后才跳变缩放）
+    preheating = false   // 预热结束：常活微动从这里开始生效
     fitToView()
     // 3) 显现动画参数：节点按距视口中心距离延迟淡入+放大（中心先亮，向两边扩散）
     const bornAt = performance.now()
@@ -466,6 +491,15 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       const selId = selectedRef.current
       const hovId = hoverRef.current
       const focusId = selId || hovId
+      // 主题高亮（v0.15.2）：同主题是一条**独立**读数，不能只靠"边相邻"。
+      // 主题是**语义**分组：本机 857 点里 395 个孤立点（46%）没有任何边，而同一个主题的成员
+      // 绝大多数彼此无边 —— 只点亮边相邻点，等于"圈出了整个主题、却只亮了几个人"（用户 2026-10-03 反馈）。
+      // 空主题/未归类不参与（否则一次悬停点亮几百个无关点）。
+      const hlTheme = (() => {
+        if (!focusId) return null
+        const t = nodeById.get(focusId)?.theme
+        return t && t !== "(未归类)" ? t : null
+      })()
       // 事件高亮（阶段四）：focusIds 非空时，非事件成员降透明度
       const focusIds = focusIdsRef?.current ?? null
       // 主题筛选（v0.10.7）：选中某主题 → 该主题节点保留、其余变灰降透明；与事件高亮可叠加
@@ -528,9 +562,18 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
           const all = themeGroupsAll.get(theme) ?? []
           if (all.length === 0) continue
           if (wholeTheme) {
-            const hullPts = convexHull(all)
-            const pinnedIds = hullPts.map((hp) => all.find((n) => n.x === hp.x && n.y === hp.y)?.id).filter(Boolean)
-            plan.push({ theme, members: all, pinnedIds, total: all.length })
+            // v0.15.2：整主题改成**分片**画，不再"全体成员一个圈"。
+            // 根因：主题是**语义**分组，连通分量是**物理**分组 —— 本机 499 个分量里 66 个跨主题（372 点），
+            // 按多数主题归属后仍有 204 点（24%）落在别家组团里。只要有一个离群成员，
+            // "全体成员的最小外接圆"就会被撑到整块画布：实测 comfyui/dsh-memory 全体圈 223% vs 本主题圈 105%、
+            // 莉音/休眠舱 73% vs 39%（用户实拍：圈罩住大半个画布、圈内亮点稀疏）。
+            // 现按 clusterByDistance 分片：主片贴合"这片相关的内容"，离群成员各得一个小圈 → 一眼看出"它在别处"。
+            const clumps = all.length >= 2 ? clusterByDistance(all, cr, { minSize: 1 }) : [all]
+            for (const clump of clumps) {
+              const hullPts = convexHull(clump)
+              const pinnedIds = hullPts.map((hp) => clump.find((n) => n.x === hp.x && n.y === hp.y)?.id).filter(Boolean)
+              plan.push({ theme, members: clump, pinnedIds, total: all.length })
+            }
             continue
           }
           if (all.length < 4) continue
@@ -629,10 +672,11 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.lineWidth = (isPrimary ? 1.5 : 1.1) / transform.k
         ctx.setLineDash([])
         ctx.stroke()
-        // 聚焦/筛选主题：只给最大的那片贴标签（标"主题总数"而非片内数），其余片不刷屏
+        // 聚焦/筛选主题：主片标签写"主题总数"，其余片不刷屏（v0.15.2 起：片数可能 >1，
+        // 只有 ≥3 成员的片值得贴自己的片内数；1~2 个离群成员只留一个小圈，不写字）
         const isPrimaryLabel = isPrimary && !primaryLabeled
         if (isPrimaryLabel) primaryLabeled = true
-        themeLabels.push({
+        if (isPrimaryLabel || r.members.length >= 3) themeLabels.push({
           text: (isPrimaryLabel ? r.total : r.members.length) + " · " + r.theme,
           x: drawShape.cx,
           y: drawShape.topY - 8 / transform.k,
@@ -665,6 +709,8 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       for (const n of nodes) {
         const isFocus = n.id === focusId
         const isNbr = focusId && neighbors.get(focusId)?.has(n.id)
+        // 同主题成员：亮起但略暗于"自己/直连邻居"，两档读数并存（连接 ≠ 主题）
+        const isTheme = hlTheme && n.id !== focusId && !isNbr && n.theme === hlTheme
         const dimmed = dimOf(n.id)
         // 从中心向两边显现：延迟按距中心距离比例（0~55% 的动画时长），easeOutCubic 放大+淡入
         const dist = Math.hypot(n.x - cx0, n.y - cy0)
@@ -672,7 +718,8 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         const t = Math.min(1, Math.max(0, (elapsed - delay) / 320))
         const ease = t <= 0 ? 0 : 1 - (1 - t) * (1 - t) * (1 - t)
         if (ease <= 0.001) continue
-        ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : 0.2) : 1) * ease * (dimmed ? 0.12 : 1)
+        // 三档：自己 + 直连邻居 1.0 / 同主题成员 0.85 / 其余 0.2
+        ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : (isTheme ? 0.85 : 0.2)) : 1) * ease * (dimmed ? 0.12 : 1)
         ctx.beginPath()
         const r = nodeRadiusOf(n) * ease
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
@@ -759,9 +806,12 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     let persistTick = 0
     let lastThemeStamp = null
     const loop = () => {
-      // v0.9.17 实时持续物理：低活跃度地板（0.02）保底，力导向一直运行、永不冻结；
-      // 打开已收敛（warmup），故只做缓慢弹性律动，无 v0.9.13 的高频抖动
-      alpha = Math.max(alpha, 0.02)
+      // v0.9.17 实时持续物理：活跃度地板保底，力导向一直运行、永不冻结。
+      // ★ v0.15.1：地板从 0.02 提到 **0.4**。旧值把力压到设计强度的 2%，布局永远爬不到平衡
+      //   （实测：1500 帧后仍在 0.457px/帧 缓慢膨胀，最近邻只有平衡距离的 22%），而一旦拖动
+      //   把 α 抬到 0.4，全场力同时放大 20 倍 → "拖一个点，盘里的球乱飞"。
+      //   现在静息与拖动**同一个工作点**，布局停在真正的力平衡上，拖动不再释放存量不平衡。
+      alpha = Math.max(alpha, 0.4)
       step()
       // 主题筛选（v0.10.7）：stamp 变化 → 视口收拢到该主题（只做一次，之后用户可自由平移缩放）
       const tf = themeFocusRef?.current ?? null
@@ -809,7 +859,9 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       moved = false
       const [mx, my] = getPos(ev)
       const n = hitTest(mx, my)
-      if (n) { dragNode = n; setDragScope(n); heat(0.35); if (!raf) raf = requestAnimationFrame(loop) }
+      // 抓住的瞬间"升温"到 0.35：整张图醒过来、弹簧开始牵引；松手后 alpha 自然衰减冷却，
+      // 于是能看到一次回弹后的收敛（弹簧感的一部分）。
+      if (n) { dragNode = n; dragPrev.x = n.x; dragPrev.y = n.y; heat(0.35); if (!raf) raf = requestAnimationFrame(loop) }
       else panStart = { x: ev.clientX, y: ev.clientY, tx: transform.x, ty: transform.y }
     }
     const onMove = (ev) => {
@@ -844,7 +896,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         }
       }
     }
-    const onUp = () => { dragNode = null; dragScope.clear(); panStart = null; downPos = null }
+    const onUp = () => { dragNode = null; panStart = null; downPos = null }
     const onClick = (ev) => {
       if (moved) return
       const [mx, my] = getPos(ev)
@@ -954,13 +1006,29 @@ function MemoryGraphView({ scope }) {
     return sub
   }, [scope])
   const physics = useMemo(() => ({
+    // v0.15.1：力模型重写后只剩「邻域场 + 边弹簧 + 阻尼 + 微动」。
+    // 旧键 repulsion / attract / gravity 三个一起废除：前两个合并成 field 与 spacing，
+    // 中心引力**没有替代品**（它换成了纯平移的 recenter，见 graph-force.js）。
+    //   field    = 整场强度倍率（0 = 关掉场内力，只剩弹簧）
+    //   spacing  = 平衡间距（×k）：比它近就斥、比它远就吸，d = k·spacing 处受力恰好为 0
+    //   attract  = 远场引力峰值（v0.15.1 新增，默认 0.06）。**必须小**：引力是累加的、斥力是
+    //              封顶的，一个点周围壳层里 ~25 个邻居的引力之和会压过核心斥力 → 整盘塌陷
+    //              （实测表见 graph-force.js 文件头）。0 = 只剩斥力（孤立点会更散）。
+    //   maxSpeed = 单帧速度上限（v0.15.1 新增，默认 4）。数值安全网，不动平衡位置。
     spring: Number(gv.spring) || 0.13,
-    repulsion: Number(gv.repulsion) || 1,
     damping: Number(gv.damping) || 0.3,
-    gravity: Number(gv.gravity) || 0.005,   // || 而非 ??：Number(undefined)=NaN，NaN??x 仍是 NaN 会击穿力导向
+    // field / spacing / attract / maxSpeed / wobble / range 用 isFinite 而不是 `||`：
+    // **0 是合法值**（关掉某项），用 `||` 会把用户填的 0 悄悄换成默认值——"设了没反应"最容易被当成 bug。
+    field: Number.isFinite(Number(gv.field)) ? Number(gv.field) : 1,
+    spacing: (() => { const v = Number(gv.spacing); return Number.isFinite(v) && v > 0 ? v : 1.6 })(),
+    attract: Number.isFinite(Number(gv.attract)) ? Number(gv.attract) : 0.06,
+    maxSpeed: (() => { const v = Number(gv.maxSpeed); return Number.isFinite(v) && v > 0 ? v : 4 })(),
+    wobble: Number.isFinite(Number(gv.wobble)) ? Number(gv.wobble) : 0.04,
+    // 邻域半径（×k）。≤0 / 非数字 → 默认 4.5：R=0 意味着"谁也不影响谁"，那不是一种手感而是故障。
+    range: (() => { const v = Number(gv.range); return Number.isFinite(v) && v > 0 ? v : 4.5 })(),
     themeShape: gv.themeShape === 'hull' ? 'hull' : 'circle',   // 主题区域形状（v0.10.8：默认圆形，轮廓连续不抖）
     themeScope: gv.themeScope === 'always' || gv.themeScope === 'off' ? gv.themeScope : 'focus',   // 显示策略（v0.10.6）
-  }), [gv.spring, gv.repulsion, gv.damping, gv.gravity, gv.themeShape, gv.themeScope])
+  }), [gv.spring, gv.damping, gv.field, gv.spacing, gv.attract, gv.maxSpeed, gv.wobble, gv.range, gv.themeShape, gv.themeScope])
 
   const load = useCallback(() => {
     setError("")
