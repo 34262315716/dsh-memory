@@ -6,10 +6,10 @@
  * 没走图谱那只手（连同关键词都用 tokenize 的 2-gram 碎片兜底，落出 `取链`/`路根`/`器里` 这种词）。
  * 本套件钉住三件事：连边必须调、关图必须不调、维度必须透传。
  */
-import { registerMemoryTools } from './lib/tools/memory.js'
-import { MemoryStore, VEC_DIM } from './lib/store.js'
-import { RuleEmbedder } from './lib/embedder.js'
-import { pickKeywords } from './lib/refiner.js'
+import { registerMemoryTools } from '../lib/tools/memory.js'
+import { MemoryStore, VEC_DIM } from '../lib/store.js'
+import { RuleEmbedder } from '../lib/embedder.js'
+import { pickKeywords } from '../lib/refiner.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

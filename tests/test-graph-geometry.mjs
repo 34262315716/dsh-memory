@@ -1,7 +1,7 @@
 // v0.10.5 专题：主题圈几何守护（贴合凸包 / 最小外接圆 / 随中心移动）
 // 用法: node test-graph-geometry.mjs（纯函数，无需部署副本环境）
-import { convexHull, padConvexPolygon, polygonContains, minimalEnclosingCircle, circleContains, themeBounds, clusterByDistance, boundsBox, densityCore } from './client/graph-geometry.js'
-import { encodeLayout, decodeLayout, restoredRatio, layoutSignature } from './client/layout-cache.js'
+import { convexHull, padConvexPolygon, polygonContains, minimalEnclosingCircle, circleContains, themeBounds, clusterByDistance, boundsBox, densityCore } from '../client/graph-geometry.js'
+import { encodeLayout, decodeLayout, restoredRatio, layoutSignature } from '../client/layout-cache.js'
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }

@@ -1,6 +1,6 @@
 // 防崩溃容错实测：mock ctx 驱动 apply()，验证 4 个失败场景不致命
 // 用法: node test-crash-safety.mjs
-import { apply } from './lib/index.js'
+import { apply } from '../lib/index.js'
 import { mkdtempSync, rmSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,7 +11,8 @@ const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`)
 
 /** 从 lib/tools/*.js 源码提取工具名清单（抗漂移：以后加工具自动对齐，漏注册自动报警）。 */
 function sourceToolNames() {
-  const dir = join(dirname(fileURLToPath(import.meta.url)), 'lib', 'tools')
+  // 本文件在 tests/ 下，源码在仓库根的 lib/tools（v0.16.0 起测试脚本集中到 tests/）
+  const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'tools')
   const names = []
   for (const f of readdirSync(dir).filter((x) => x.endsWith('.js') && x !== 'index.js' && x !== 'shared.js')) {
     const src = readFileSync(join(dir, f), 'utf8')

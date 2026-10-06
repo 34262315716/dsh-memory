@@ -1,6 +1,6 @@
 // v0.9.12 专项：关键词→实体稀有化（pickRareEntities + graphLink 硬过滤）
 // 用法: node test-keyword-filter.mjs
-import { MemoryStore } from './lib/store.js'
+import { MemoryStore } from '../lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

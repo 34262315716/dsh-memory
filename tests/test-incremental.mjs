@@ -1,6 +1,6 @@
 // v0.9.8 专项：主题聚类增量 + 事件检测增量（水位线驱动）——启动/巡检不再全量重建。
 // 用法: node test-incremental.mjs
-import { MemoryStore } from './lib/store.js'
+import { MemoryStore } from '../lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

@@ -2,7 +2,7 @@
  * 语义连边判定守护测试（lib/link-suggest.js）：四道闸门 + 去重 + 上限 + 层级过滤 + 确定性。
  * 纯函数，无 DB/网络依赖。
  */
-import { suggestLinks, pairKey, LINK_TAU, LINK_TAU_CROSS_SCOPE, LINK_TOPK } from './lib/link-suggest.js'
+import { suggestLinks, pairKey, LINK_TAU, LINK_TAU_CROSS_SCOPE, LINK_TOPK } from '../lib/link-suggest.js'
 
 let pass = 0, fail = 0
 const check = (name, ok) => {

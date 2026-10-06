@@ -3,7 +3,7 @@
  * 覆盖四道闸门在**真实 store 接口**上的行为（纯函数规则本身由 test-link-suggest.mjs 覆盖）。
  * 每段用**独立的临时库**——否则前一段的高相似向量会成为后一段的邻居，测试互相污染。
  */
-import { MemoryStore, cosine } from './lib/store.js'
+import { MemoryStore, cosine } from '../lib/store.js'
 import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

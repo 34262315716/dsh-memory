@@ -19,7 +19,7 @@
 import {
   llmStrictJson, extractWithLlm,
   DEFAULT_DIALOG_CHARS, DEFAULT_KNOWN_CHARS, DEFAULT_KNOWN_TOP_N,
-} from './lib/refiner.js'
+} from '../lib/refiner.js'
 
 let pass = 0
 let fail = 0

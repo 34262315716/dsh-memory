@@ -1,7 +1,7 @@
 // v0.9.10 专项：更新时新内容永远接在旧内容末尾（+N 徽标每更新 +1），完全相同内容 = 无操作
 // 用法: node test-update-append.mjs
-import { MemoryStore, tokenize } from './lib/store.js'
-import { upsertMemory } from './lib/pipelines/write.js'
+import { MemoryStore, tokenize } from '../lib/store.js'
+import { upsertMemory } from '../lib/pipelines/write.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

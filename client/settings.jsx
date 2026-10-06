@@ -35,9 +35,18 @@ const FEATURE_FIELDS = [
   ['valueGate', '价值门', '过滤低价值噪音'],
   ['dedupMerge', '去重合并', '相似记忆更新而非新建'],
   ['preStepInject', '自动注入', 'pre-step 每步自动注入相关记忆'],
+  ['userMessageTrigger', '用户消息触发检索', '每条用户消息都重新检索一次（不受步距节流限制）；关掉则只按注入节奏数步'],
+  ['writeGate', '写入前预筛', '轮次结束时先问一次决策模型「这段对话值得记吗」；只有它高把握说"不值得"才省掉这次 LLM 提取，改落规则快照'],
   ['manageTools', '管理工具集', '暴露 memory_* 工具给模型'],
   ['time', '时间维度', '更新追加版本（世界线），关闭则直接覆盖（需重启 DSH 生效）'],
   ['graph', '图谱构建', '实体节点 + 共现边'],
+]
+
+/** 写入侧决策门字段（decision 子对象，v0.16.0）。只服务写入侧的提取预筛。 */
+const DECISION_FIELDS = [
+  ['endpoint', '决策服务端点', '默认 http://127.0.0.1:8090/v1/systemone（本机 StartLux-Decision，启动脚本见决策模型技能）'],
+  ['timeoutMs', '单次判断超时（毫秒）', '200~10000，默认 2000；到点即放弃、照常提取（不让它拖住这一轮）'],
+  ['writeMinConfidence', '写入侧采信门槛', '0.5~0.99，默认 0.9；只有把握度不低于它才采信"不值得记"。判错一次就少记一条，所以宁可多花一次 LLM'],
 ]
 
 /** 提取模型字段（refiner 子对象）。 */
@@ -46,7 +55,7 @@ const REFINER_FIELDS = [
   ['provider', '供应商 Provider', '已配置的 provider 路由（下拉预设；自建端点可选自定义）'],
   ['model', '模型', '选定供应商的模型目录（下拉预设；可自定义 id）'],
   ['apiKeyEnv', '独立密钥槽引用', '仅当选中供应商未声明 apiKeyEnv 时生效（自建供应商场景），默认 MEMORY_REFINER_API_KEY'],
-  ['reasoningEffort', '推理档位', 'low/medium/high = 明确思考档（推荐，提取质量优先）；off = 让上游用默认（思考型模型照样思考——off 不等于关思考）'],
+  ['reasoningEffort', '推理档位', 'off（默认）= 不思考：不带该参数，由适配器发出 thinking:{type:disabled}（需该模型声明了 off 映射）；填 low/high/max 才是开启思考并指定档位'],
   ['maxTokens', '输出上限（token）', '0 = 不限制（默认，由时间预算兜底）；只有需要硬性限长时才填正数'],
   ['timeBudgetMs', '单次时间预算（毫秒）', '到点掐断，把已写内容带回去续跑（默认 120000 = 2 分钟）'],
   ['maxContinuations', '续跑轮数上限', '掐断/空输出后最多再接着写几次（默认 3）'],
@@ -104,7 +113,7 @@ const LOGGING_FIELDS = [
   ['maxRows', '日志保留条数', '惰性裁剪上限（100~10000，默认 2000）'],
 ]
 
-const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'field', 'spacing', 'attract', 'maxSpeed', 'damping', 'range', 'wobble', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays', 'gapHours', 'maxRows', 'maxTokens', 'timeBudgetMs', 'maxContinuations'])
+const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'field', 'spacing', 'attract', 'maxSpeed', 'damping', 'range', 'wobble', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays', 'gapHours', 'maxRows', 'maxTokens', 'timeBudgetMs', 'maxContinuations', 'timeoutMs', 'writeMinConfidence'])
 
 /**
  * 宿主设计令牌（主题包注入 :root 的 --dsw-alias-*）。
@@ -387,6 +396,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
 
   const features = value.features ?? {}
   const refiner = value.refiner ?? {}
+  const decision = value.decision ?? {}
   const embedding = value.embedding ?? {}
   // 嵌入模型切换风险（v0.10.4）：改动不 live 生效，重启 DSH 时触发向量库维度迁移
   // （DROP 向量表 + 全量重嵌入；远程嵌入失败则进入降级态暂停向量路）。确认勾选才能保存。
@@ -523,6 +533,16 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           }
         }
         await scope.set('refiner', next)
+      }
+      {/* decision 整体（v0.16.0 决策门） */}
+      const decKeys = DECISION_FIELDS.map(([f]) => f)
+      if (decKeys.some((f) => drafts[`decision.${f}`] !== undefined)) {
+        const next = { ...decision }
+        for (const [f] of DECISION_FIELDS) {
+          const v = drafts[`decision.${f}`]
+          if (v !== undefined) next[f] = NUMERIC_SUB.has(f) ? Number(v) : String(v)
+        }
+        await scope.set('decision', next)
       }
       {/* embedding 整体 */}
       const embKeys = EMBEDDING_FIELDS.map(([f]) => f)
@@ -753,6 +773,28 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
             />
           </Field>
         ))}
+        {/* 写入侧决策门（v0.16.0）：只用来**省掉不必要的 LLM 提取**；检索路径上不做任何决策判断。 */}
+        <p style={{ color: T.sub, fontSize: 12, margin: '12px 0 8px 0' }}>
+          写入侧决策门（v0.16.0）：轮次结束时问一次本机决策模型「这段对话值得记吗」，只有它高把握说
+          "不值得"才省掉这次 LLM 提取（改落一条规则快照，记录不丢）。服务没起 / 超时 / 没把握 / 本轮被取消
+          都照常提取；服务未启动时自动冷却 5 分钟，不再逐轮去撞它。<br />
+          <b>检索路径上没有决策门</b>：用户消息来了就直接查库，不问"要不要查"。
+        </p>
+        {DECISION_FIELDS.map(([field, label, hint]) => (
+          <Field key={field} label={label} hint={hint}>
+            <input
+              style={inputStyle}
+              type={field === 'endpoint' ? 'text' : 'number'}
+              value={drafts[`decision.${field}`] ?? decision[field] ?? ''}
+              disabled={!writable}
+              onChange={(e) =>
+                field === 'endpoint'
+                  ? setText('decision', field, e.target.value)
+                  : setNum(`decision.${field}`, e.target.value)
+              }
+            />
+          </Field>
+        ))}
       </div>
 
       <div style={blockStyle}>
@@ -842,11 +884,11 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           onChange={(e) => setText('refiner', 'apiKeyEnv', e.target.value)}
         />
       </Field>
-      <Field label="推理档位（reasoningEffort）" hint="low/medium/high = 明确思考档（默认 low：先判断再写）。注意 off 不等于关思考——适配器把 off 当「不传参数」，思考型模型（如 deepseek-v4.1-flash）照样思考；仅适配器声明 supportsReasoningEffort 时透传">
+      <Field label="推理档位（reasoningEffort）" hint="off（默认）= 不思考：插件不带这个参数，适配器据此发出 thinking:{type:'disabled'}（前提是该模型声明了非 null 的 off 映射，本机 opencode-go/deepseek-v4.1-flash 已声明）。填 low/high/max 才是开启思考并指定档位——注意直接填 'off' 不会关思考，它会被当成一个档位传下去">
         <input
           style={inputStyle}
           type="text"
-          value={drafts['refiner.reasoningEffort'] ?? refiner.reasoningEffort ?? 'low'}
+          value={drafts['refiner.reasoningEffort'] ?? refiner.reasoningEffort ?? 'off'}
           disabled={!writable}
           onChange={(e) => setText('refiner', 'reasoningEffort', e.target.value)}
         />

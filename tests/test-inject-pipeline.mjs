@@ -1,7 +1,7 @@
 // v0.10.1 注入管线专项：修复"AI 回复后记忆块作为独立一步被消费 → 模型多答一轮"
 // 用法: node test-inject-pipeline.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
-import { attachInjectPipeline, buildPinned } from './lib/pipelines/inject.js'
-import { Config, INJECT_PACE_LABELS, INJECT_PACE_STEPS, resolveStepInterval } from './lib/config.js'
+import { attachInjectPipeline, buildPinned } from '../lib/pipelines/inject.js'
+import { Config, INJECT_PACE_LABELS, INJECT_PACE_STEPS, resolveStepInterval } from '../lib/config.js'
 
 // v0.14.0：Config 是**整表** `.volatile()` 的 schema（0.2.0-rc.2 上设置面板能显示表单的前提），
 // 所以 `Config(x)` 解析出来的是 cosmokit `Volatile` 包装——读值前要先解包。
@@ -11,8 +11,9 @@ const cfgOf = (input) => {
   const parsed = Config(input)
   return typeof parsed?.get === 'function' ? parsed.get() : parsed
 }
-import { MemoryStore } from './lib/store.js'
-import { extractUserText, extractWorkText, renderPinned, stripInjectedNoise } from './lib/util.js'
+import { MemoryStore } from '../lib/store.js'
+import { extractUserText, renderPinned, stripInjectedNoise } from '../lib/util.js'
+import { WORK_ITEM_CHARS, WORK_KEEP, extractWorkText, workProjectionApply, workProjectionInit, workStateSchema } from '../lib/work-projection.js'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,10 +35,28 @@ const CFG = () => ({
   pinnedMaxTokens: 600,
 })
 
+/**
+ * v0.16.0：这些用例测的是**纯步距节流**这条老契约（每 N 步必检）。
+ * 必须显式关掉「用户消息触发」——开着它时，每条文本不同的用户消息都会强制检索一次，
+ * 步距就再也观察不到（而这正是新功能要改的事）。新契约的用例见文末 §15。
+ */
+const CFG_STEP_ONLY = (over = {}) => ({
+  ...CFG(),
+  ...over,
+  features: { ...CFG().features, userMessageTrigger: false, ...(over.features ?? {}) },
+})
+
 const HITS = [{ id: 'mem-x', content: '测试记忆内容：用户偏好纯白设定图', score: 0.6, layer: 'sm', updated_at: Date.now() }]
 
-/** 组装一个可触发的注入管线实例。pins：常驻记忆（v0.13.0）。 */
-function setup({ hits = HITS, cfg = CFG, pins = [] } = {}) {
+/** 用**真实的**投影单元折叠一段事件流，得到工作上下文 state（与内核折叠路径同构）。 */
+function foldWork(events) {
+  let state = workProjectionInit()
+  for (const ev of events) state = workProjectionApply(state, ev)
+  return state
+}
+
+/** 组装一个可触发的注入管线实例。pins：常驻记忆（v0.13.0）；workState：工作上下文投影快照（v0.15.3）。 */
+function setup({ hits = HITS, cfg = CFG, pins = [], workState = null } = {}) {
   const events = {}
   const logs = []
   const lastArgs = {}
@@ -53,25 +72,62 @@ function setup({ hits = HITS, cfg = CFG, pins = [] } = {}) {
     },
     getCfg: cfg,
     wsRegistry: { list: () => [] },
-    logStore: (level, ev, data) => logs.push(data),
+    // v0.15.3：工作上下文改走官方会话投影（lib/work-projection.js）。测试喂的都是 foldWork()
+    // 折叠出来的真 state——与真实路径同构，不再伪造内核没有的 session.events。
+    workProjection: { available: workState !== null, read: () => workState },
+    // 保留 level/ev：断言既能读 data 字段，也能按事件名过滤（v0.15.3 起有 inject.coord_missing）
+    logStore: (level, ev, data) => logs.push({ level, ev, ...data }),
   })
   const handler = events['agent/pre-step']
-  // 默认 agent 复用同一实例：session.events 跨调用累积（模拟真实会话步数推进）
-  const sharedAgent = { id: 'agent-1', session: { events: [] } }
+  // 默认 agent 复用同一实例（模拟同一会话连续多步）。
+  // v0.15.3：session 上**不再挂 events**——真实内核的 Session 没有这个属性，
+  // 测试当年伪造它，正是"读 session.events"能稳定通过的原因。
+  const sharedAgent = { id: 'agent-1', session: {} }
+  // v0.15.3：真实内核每一步都送**递增**坐标（agent-loop: `const step = phase.step + 1`）。
+  // 旧 mock 硬编码 {turn:1, step:1}，等于向被测代码宣称"内核每步都报第 1 步"——
+  // 正是这条与内核不同构的假坐标，让"步号恒为 0"的老 bug 在测试里一直看不出来。
+  let seq = 0
   const call = async (text, next, opts = {}) => {
     const messages = opts.messages ?? (text ? [userMsg(text)] : [])
     const agent = opts.agent ?? sharedAgent
-    const result = await handler({ messages, agent, turn: 1, step: 1, signal: {} }, next)
-    // 模拟本步完成：push step/start（下次 pre-step 时步号 +1，对齐 agent-loop 真实时序）
-    if (agent.session) agent.session.events.push({ type: 'step/start', data: { turn: 1 } })
-    return result
+    seq += 1
+    return handler({ messages, agent, turn: opts.turn ?? 1, step: opts.step ?? seq, signal: {} }, next)
   }
-  return { call, logs, lastArgs }
+  return { call, logs, lastArgs, handler }
 }
 
 /** 构造真实用户消息（source.kind='user'）。 */
 function userMsg(text) {
   return { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] }
+}
+
+console.log('== 0. 守卫（v0.15.3）：步号只认内核坐标，不读 session.events ==')
+{
+  // 0a：正常路径——内核坐标每步递增，日志步号必须跟着走（旧 bug 下恒为 1，节流永远卡死）
+  let n = 0
+  const { call, logs } = setup({ cfg: CFG_STEP_ONLY, hits: () => [{ id: `mem-g${++n}`, content: `守卫记忆${n}`, score: 0.6, layer: 'sm', updated_at: Date.now() }] })
+  const fallback = async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] })
+  await call('守卫甲', fallback) // step 1 → 注入
+  await call('守卫乙', fallback) // step 2 → 步距内跳过（stepInterval=2）
+  await call('守卫丙', fallback) // step 3 → 步距到 → 注入
+  const injects = logs.filter((l) => l.ev === 'inject')
+  check('步号随内核坐标推进（日志步号 1,3 而非恒 1）', injects.map((l) => l.step).join(',') === '1,3')
+  check('正常路径不写坐标缺失告警', logs.every((l) => l.ev !== 'inject.coord_missing'))
+
+  // 0b：内核没给坐标（老版本/异常形状）→ 降级为逐次 +1，而不是归零后永远早退
+  let m = 0
+  const { handler, logs: logs2 } = setup({
+    cfg: () => CFG_STEP_ONLY({ injectPace: 'custom', stepInterval: 1 }),
+    hits: () => [{ id: `mem-nc${++m}`, content: `降级记忆${m}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+  })
+  const fb = async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] })
+  const agent2 = { id: 'agent-nocoord', session: { events: [] } }
+  await handler({ messages: [userMsg('守卫甲')], agent: agent2, signal: {} }, fb)
+  await handler({ messages: [userMsg('守卫乙')], agent: agent2, signal: {} }, fb)
+  await handler({ messages: [userMsg('守卫丙')], agent: agent2, signal: {} }, fb)
+  const injects2 = logs2.filter((l) => l.ev === 'inject')
+  check('无坐标降级：步号自增 1,2,3（不是恒 0）', injects2.map((l) => l.step).join(',') === '1,2,3')
+  check('无坐标只告警一次（每个 agent 一条）', logs2.filter((l) => l.ev === 'inject.coord_missing').length === 1)
 }
 
 console.log('== 1. 修复主行为：记忆块合并进本步 decision，不再经 agent.inject() ==')
@@ -82,7 +138,7 @@ console.log('== 1. 修复主行为：记忆块合并进本步 decision，不再�
   check('decision.kind 保持 enter', decision?.kind === 'enter')
   check('消息数 = 用户 + context + 记忆块（同一步）', decision?.messages?.length === 3)
   const mem = decision?.messages?.at(-1)
-  check('记忆块溯源 form=recall / plugin', mem?.source?.kind === 'plugin' && mem?.source?.form === 'recall')
+  check("记忆块溯源 form=recall / kind='plugin:dsh-memory'", mem?.source?.kind === 'plugin:dsh-memory' && mem?.source?.form === 'recall')
   check('记忆块内容含记忆标题', String(mem?.content?.[0]?.text ?? '').includes('[记忆]'))
   check('未调用 agent.inject（agent mock 无 inject 方法，调用即 TypeError）', true)
 }
@@ -101,7 +157,7 @@ console.log('== 3. 步距节流 + 恢复：按真实步数计数（stepInterval=
 {
   // 每轮检索结果不同（避开 blockHash 去抖干扰，单独验证节流）
   let n = 0
-  const { call } = setup({ hits: () => [{ id: `mem-${++n}`, content: `记忆内容${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
+  const { call } = setup({ cfg: CFG_STEP_ONLY, hits: () => [{ id: `mem-${++n}`, content: `记忆内容${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
   const fallback = async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] })
   const d1 = await call('第一轮问题', fallback)
   const d2 = await call('第二轮问题', fallback)
@@ -112,7 +168,7 @@ console.log('== 3. 步距节流 + 恢复：按真实步数计数（stepInterval=
 
   // 3b：无文本步（工具/自主步）同样消耗步数——连续两轮用户消息中间夹工具步 → 第二轮也注入
   let m = 0
-  const { call: callB } = setup({ hits: () => [{ id: `mem2-${++m}`, content: `记忆${m}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
+  const { call: callB } = setup({ cfg: CFG_STEP_ONLY, hits: () => [{ id: `mem2-${++m}`, content: `记忆${m}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
   const db1 = await callB('甲问题', fallback)
   const dbMid = await callB(null, fallback) // 模拟工具结果步（无真实用户文本）
   const db2 = await callB('乙问题', fallback)
@@ -127,23 +183,26 @@ console.log('== 3c. 自主轮次注入（v0.9.23）：无用户消息时用会�
     { type: 'user/message', data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '原始任务：搭建记忆系统' }] } },
     { type: 'assistant/message', data: { message: { role: 'assistant', source: { provider: 'mock' }, content: [{ type: 'text', text: '我正在处理图谱构建' }] } } },
   ]
-  const { call, logs } = setup()
+  // v0.15.3：工作上下文改由投影单元折叠出 state（旧写法伪造 agent.session.events）
+  const { call, logs } = setup({ workState: foldWork(events) })
   const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
-  const d = await call(null, fallback, { agent: { id: 'agent-1', session: { events } } })
-  check('自主轮次注入成功（context + 记忆块）', d.messages.length === 2 && d.messages.at(-1)?.source?.kind === 'plugin')
+  const d = await call(null, fallback, { agent: { id: 'agent-1', session: {} } })
+  check("自主轮次注入成功（context + 记忆块）", d.messages.length === 2 && d.messages.at(-1)?.source?.kind === 'plugin:dsh-memory')
   check('检索 query 用了最近 assistant 工作内容', logs.at(-1)?.query?.includes('图谱构建'))
   check('且包含历史任务文本', logs.at(-1)?.query?.includes('原始任务'))
 }
 
 console.log('== 3d. 自主轮次守卫：无会话 / 会话仅注入块 / 均不注入 ==')
 {
-  const { call } = setup()
   const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+  const { call } = setup() // 投影不可用（headless 组装 / 无该服务）→ 没有工作文本
   const d1 = await call(null, fallback, { agent: { id: 'no-session' } })
   check('agent 无 session：不注入', d1.messages.length === 1)
 
-  const pluginOnly = [{ type: 'user/message', data: { role: 'user', source: { kind: 'plugin', plugin: 'dsh-memory' }, content: [{ type: 'text', text: '[记忆] 注入块' }] } }]
-  const d2 = await call(null, fallback, { agent: { id: 'agent-1', session: { events: pluginOnly } } })
+  // 投影可用，但里面只有插件自己的注入块（apply 里按 source.kind 跳过）→ 仍是"没有工作文本"
+  const pluginOnly = [{ type: 'user/message', data: { role: 'user', source: { kind: 'plugin:dsh-memory' }, content: [{ type: 'text', text: '[记忆] 注入块' }] } }]
+  const { call: call2 } = setup({ workState: foldWork(pluginOnly) })
+  const d2 = await call2(null, fallback, { agent: { id: 'agent-2', session: {} } })
   check('会话仅插件注入块：不注入', d2.messages.length === 1)
 }
 
@@ -173,7 +232,7 @@ console.log('== 4b. 同 query 步距到 → 必检（命中内容变化则再次
 
 console.log('== 7. 自定义档 stepInterval=10：75 步 → 8 个检索注入点（步 1 首检 + 每满 10 步） ==')
 {
-  const CFG10 = () => ({ ...CFG(), injectPace: 'custom', stepInterval: 10 })
+  const CFG10 = () => CFG_STEP_ONLY({ injectPace: 'custom', stepInterval: 10 })
   let n = 0
   const { call, logs } = setup({
     cfg: CFG10,
@@ -207,7 +266,7 @@ console.log('== 7b. 档位解析（v0.11.2）：激进 4 / 平稳 12 / 懒惰 30
 
 console.log('== 7c. 平稳档（steady=12）长任务节奏：121 步 → 11 个检索注入点 ==')
 {
-  const CFGSteady = () => ({ ...CFG(), injectPace: 'steady' })
+  const CFGSteady = () => CFG_STEP_ONLY({ injectPace: 'steady' })
   let n = 0
   const { call, logs } = setup({
     cfg: CFGSteady,
@@ -227,7 +286,7 @@ console.log('== 7c. 平稳档（steady=12）长任务节奏：121 步 → 11 个
 
 console.log('== 7d. 懒惰档（lazy=30）长任务节奏：61 步 → 3 个检索注入点 ==')
 {
-  const CFGLazy = () => ({ ...CFG(), injectPace: 'lazy' })
+  const CFGLazy = () => CFG_STEP_ONLY({ injectPace: 'lazy' })
   let n = 0
   const { call } = setup({
     cfg: CFGLazy,
@@ -244,7 +303,7 @@ console.log('== 7d. 懒惰档（lazy=30）长任务节奏：61 步 → 3 个检�
 
 console.log('== 7e. 自定义档 stepInterval=12：数字真正说了算 ==')
 {
-  const CFG12 = () => ({ ...CFG(), injectPace: 'custom', stepInterval: 12 })
+  const CFG12 = () => CFG_STEP_ONLY({ injectPace: 'custom', stepInterval: 12 })
   let n = 0
   const { call } = setup({
     cfg: CFG12,
@@ -276,7 +335,7 @@ console.log('== 7f. schema：injectPace 默认平稳、stepInterval 上限 60（
 
 console.log('== 7g. 客户端档位表与 config 同源（防"UI 写 12、代码跑 10"漂移） ==')
 {
-  const src = readFileSync(new URL('./client/settings.jsx', import.meta.url), 'utf8')
+  const src = readFileSync(new URL('../client/settings.jsx', import.meta.url), 'utf8')
   const block = src.match(/const INJECT_PACE_OPTIONS = \[([\s\S]*?)\n\]/)?.[1] ?? ''
   const rows = [...block.matchAll(/\['([a-z]+)', '([^']+)', (\d+),/g)].map((m) => ({ key: m[1], label: m[2], steps: Number(m[3]) }))
   check('客户端列出 4 个档位（三档 + 自定义）', rows.length === 4 && rows.map((r) => r.key).join(',') === 'aggressive,steady,lazy,custom')
@@ -287,7 +346,7 @@ console.log('== 7g. 客户端档位表与 config 同源（防"UI 写 12、代码
 console.log('== 5. 守卫：无真实用户文本 / 空检索 / reject 均不注入 ==')
 {
   const { call } = setup()
-  const fallback = async () => ({ kind: 'enter', messages: [{ role: 'user', source: { kind: 'plugin' }, content: [{ type: 'text', text: '[记忆] 注入块' }] }, { type: 'context' }] })
+  const fallback = async () => ({ kind: 'enter', messages: [{ role: 'user', source: { kind: 'plugin:dsh-memory' }, content: [{ type: 'text', text: '[记忆] 注入块' }] }, { type: 'context' }] })
   const d1 = await call('', fallback) // handler 内 extractUserText 为空
   check('纯插件消息轮次：不注入且原样放行', d1.messages.length === 2)
 
@@ -334,8 +393,9 @@ console.log('== 9. 噪音剥离（v0.13.0）：平台/插件提醒不再被当�
     { type: 'user/message', data: userMsg(REMIND) },
     { type: 'assistant/message', data: { message: { role: 'assistant', source: { provider: 'mock' }, content: [{ type: 'text', text: '我在改注入管线' }] } } },
   ]
-  const w = extractWorkText({ session: { events } })
-  check('extractWorkText 同样剥掉提醒块', w.includes('注入管线') && !w.includes('system-reminder'))
+  // v0.15.3：改由真实投影单元折叠出 state（旧写法是伪造 agent.session.events 喂给 extractWorkText）
+  const w = extractWorkText(foldWork(events))
+  check('extractWorkText（投影 state）同样剥掉提醒块', w.includes('注入管线') && !w.includes('system-reminder'))
 }
 
 console.log('== 9b. 真凶回归：工具步（消息里只剩提醒）不再拿提醒当 query，回落工作上下文 ==')
@@ -345,12 +405,20 @@ console.log('== 9b. 真凶回归：工具步（消息里只剩提醒）不再拿
     { type: 'user/message', data: userMsg('帮我把常驻注入做出来') },
     { type: 'assistant/message', data: { message: { role: 'assistant', source: { provider: 'mock' }, content: [{ type: 'text', text: '正在改 inject.js' }] } } },
   ]
-  const { call, logs } = setup()
+  const { call, logs } = setup({ workState: foldWork(events) })
   const fallback = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
-  const d = await call(null, fallback, { agent: { id: 'tool-step', session: { events } }, messages: [userMsg(REMIND)] })
+  const d = await call(null, fallback, { agent: { id: 'tool-step', session: {} }, messages: [userMsg(REMIND)] })
   check('工具步照样注入', d.messages.length === 2)
   check('query 用的是真实工作上下文', logs.at(-1).queryKind === 'work' && logs.at(-1).query.includes('常驻注入'))
   check('query 里不再有 MCP 提醒字样', !logs.at(-1).query.includes('MCP servers'))
+
+  // 9c：投影服务不可用（headless 组装 / 老内核）→ 退回"没有工作文本"，不炸，并留一条诊断告警
+  {
+    const s2 = setup() // workState 默认 null → available=false
+    const d2 = await s2.call(null, fallback, { agent: { id: 'no-proj', session: {} }, messages: [userMsg(REMIND)] })
+    check('投影不可用 + 无用户文本 → 不注入且不抛错', Array.isArray(d2.messages) && d2.messages.length === 1)
+    check('写一条 inject.work_missing 诊断告警', s2.logs.filter((l) => l.ev === 'inject.work_missing').length === 1)
+  }
 }
 
 console.log('== 10. 常驻通道（v0.13.0）：不依赖检索，恒定抵达 ==')
@@ -481,5 +549,142 @@ console.log('== 12b. schema：常驻旋钮默认值 ==')
   check('pinnedLimit=0 被拒（至少 1 条）', rej)
 }
 
+console.log('== 13. 工作上下文投影（v0.15.3）：官方 sessionProjections 单元的本体行为 ==')
+{
+  const U = (t) => ({ type: 'user/message', data: userMsg(t) })
+  const A = { type: 'assistant/message', data: { message: { role: 'assistant', source: { provider: 'mock' }, content: [{ type: 'text', text: '答一' }] } } }
+  const PL = { type: 'user/message', data: { role: 'user', source: { kind: 'plugin:other' }, content: [{ type: 'text', text: '插件回声不该进工作上下文' }] } }
+
+  // 13a：不关心的事件必须返回**同一引用**（内核靠 Object.is 短路；返回新对象会让下游白跑一遍）
+  const st0 = workProjectionInit()
+  check('不关心的事件返回同一引用', workProjectionApply(st0, { type: 'turn/start', data: { turn: 1 } }) === st0)
+
+  // 13b：只收人话；插件自己的注入块要跳过（否则拿自己的回声当 query，滚雪球）
+  let st = workProjectionApply(st0, U('第一句'))
+  st = workProjectionApply(st, PL)
+  st = workProjectionApply(st, A)
+  check('跳过 source.kind=plugin 的注入块', !JSON.stringify(st).includes('插件回声'))
+  check('收下用户与助手文本（时间序）', extractWorkText(st) === '第一句\n答一')
+
+  // 13c：环形缓冲上限（工作上下文只要"最近在忙什么"，不是全会话）
+  let st2 = workProjectionApply(workProjectionInit(), U('第一句'))
+  for (let i = 0; i < WORK_KEEP + 3; i++) st2 = workProjectionApply(st2, U(`第${i}句`))
+  check(`只保留最近 ${WORK_KEEP} 条（环形缓冲）`, st2.recent.length === WORK_KEEP)
+  check('最旧的被挤掉、最新的在', !extractWorkText(st2).includes('第一句') && extractWorkText(st2).includes(`第${WORK_KEEP + 2}句`))
+
+  // 13d：纯提醒块不产生工作文本（工具步 payload 里常只剩 MCP 提醒）
+  const dirty = workProjectionApply(workProjectionInit(), U('<system-reminder>\nMCP servers\n</system-reminder>'))
+  check('纯提醒块的用户消息不产生工作文本', extractWorkText(dirty) === '')
+
+  // 13e：stateSchema.parse 清洗脏数据（内核恢复持久化缓存时调用；抛错会带崩整条投影驱动）
+  const parsed = workStateSchema.parse({ recent: [{ role: 'bogus', text: 'x' }, { role: 'user', text: 'ok' }, null, { role: 'assistant', text: '' }] })
+  check('parse 剔掉非法条目且不抛错', parsed.recent.length === 1 && parsed.recent[0].text === 'ok')
+  check('parse(垃圾) 也返回合法空状态', workStateSchema.parse(undefined).recent.length === 0)
+
+  // 13f：单条截断（工作 query 不该被一段超长粘贴撑爆）
+  const longState = workProjectionApply(workProjectionInit(), U('啊'.repeat(WORK_ITEM_CHARS * 12)))
+  check(`单条按 WORK_ITEM_CHARS=${WORK_ITEM_CHARS} 截断`, extractWorkText(longState).length === WORK_ITEM_CHARS)
+}
+
+console.log('== 14. v4 producer source（v0.15.3）：LLM 请求与注入消息必须带 producer-owned source ==')
+{
+  // 背景（2026-10-04 主人实测报错）：内核 dsh-session-format-v3-to-v4 的 source() 规则是
+  //   source 必须是 JSON 对象 + kind 必须是非空字符串 + kind !== 'plugin'（裸 'plugin' 是已退役的
+  //   v3 写法），第三方插件按 producerKind() 兜底分支取 `plugin:<插件名>`。
+  // assertV4MessageSources 在 Session **采纳**前对每个消息槽无条件校验（mapEventMessages 里
+  // `session/title-llm-request` 取 data.messages），缺 source 就直接抛错 → 提取全线降级规则路径。
+  const { call } = setup()
+  const d = await call('测 source 形状', async () => ({ kind: 'enter', messages: [userMsg('测 source 形状')] }))
+  const injected = d.messages.find((m) => m.source?.kind === 'plugin:dsh-memory')
+  check("注入消息 kind 是 producer-owned 的 'plugin:dsh-memory'", !!injected)
+  check('注入消息不带已退役的 plugin 字段', !!injected && !Object.hasOwn(injected.source, 'plugin'))
+
+  // 源码级守卫：这两处手写 LLM 请求消息曾因缺 source 被内核拒绝（refiner 提取 / 诊断探针）
+  const { readFileSync } = await import('node:fs')
+  const pat = /messages: \[\{ role: 'user', source: \{ kind: 'plugin:dsh-memory'/
+  const refinerSrc = readFileSync(new URL('../lib/refiner.js', import.meta.url), 'utf8')
+  check('refiner 的 LLM 请求消息带 producer source', pat.test(refinerSrc))
+  const indexSrc = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  check('诊断探针的 LLM 请求消息带 producer source', pat.test(indexSrc))
+}
+
+console.log('== 15. 用户消息触发（v0.16.0）：每条新用户消息都必检一次，不看步距 ==')
+{
+  const fb = async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] })
+  /** 用户消息触发开启的配置（步距故意设成 12，用来证明"新消息不受它管"）。 */
+  const CFG_UM = (over = {}) => ({
+    ...CFG(),
+    ...over,
+    injectPace: over.injectPace ?? 'custom',
+    stepInterval: over.stepInterval ?? 12,
+    features: { preStepInject: true, userMessageTrigger: true, ...(over.features ?? {}) },
+  })
+
+  // 15a：步距 12 也拦不住——三条不同的用户消息连着发，逐条检索注入
+  {
+    let n = 0
+    const { call, logs } = setup({ cfg: CFG_UM, hits: () => [{ id: `mem-u${++n}`, content: `新消息记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
+    const d1 = await call('第一个问题', fb)
+    const d2 = await call('第二个问题', fb)
+    const d3 = await call('第三个问题', fb)
+    check('15a 三条新消息各自注入（步距 12 拦不住）', [d1, d2, d3].every((d) => d.messages.length === 3))
+    check('15a 三次检索、三条注入日志', logs.filter((l) => l.ev === 'inject').length === 3)
+    check("15a 日志触发源标为 user-message", logs.filter((l) => l.ev === 'inject').every((l) => l.trigger === 'user-message'))
+  }
+
+  // 15b：同一条用户消息再次出现（同轮里被重复带上）→ 不重复检索
+  {
+    let n = 0
+    const { call, logs } = setup({ cfg: CFG_UM, hits: () => [{ id: `mem-v${++n}`, content: `记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
+    const d1 = await call('同一个问题', fb)
+    const d2 = await call('同一个问题', fb)
+    check('15b 首次注入', d1.messages.length === 3)
+    check('15b 同文本再出现不重复检索', d2.messages.length === 2 && logs.filter((l) => l.ev === 'inject').length === 1)
+  }
+
+  // 15c：开关关掉 → 回到纯步距契约（v0.15.x 行为）
+  {
+    let n = 0
+    const { call } = setup({ cfg: () => CFG_STEP_ONLY({ stepInterval: 12 }), hits: () => [{ id: `mem-w${++n}`, content: `记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] })
+    const d1 = await call('第一个问题', fb)
+    const d2 = await call('第二个问题', fb)
+    check('15c 关掉后：首检注入、第二条被步距拦下', d1.messages.length === 3 && d2.messages.length === 2)
+  }
+
+  // 15d：工具步仍然按步距走（触发源可对账）
+  {
+    const events = [{ type: 'user/message', data: userMsg('原始任务：改注入管线') }]
+    let n = 0
+    const { call, logs } = setup({
+      cfg: () => CFG_UM({ stepInterval: 2 }),
+      workState: foldWork(events),
+      hits: () => [{ id: `mem-t${++n}`, content: `记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+    })
+    const fbWork = async () => ({ kind: 'enter', messages: [{ type: 'context' }] })
+    await call('问题甲', fb) // step1：用户消息 → 必检
+    await call(null, fbWork, { messages: [] }) // step2：工具步（无用户文本）→ 步距内 → 跳过
+    await call(null, fbWork, { messages: [] }) // step3：工具步 → 步距到 → 检索
+    const trig = logs.filter((l) => l.ev === 'inject').map((l) => l.trigger)
+    check('15d 触发源可对账（user-message → interval）', trig.join(',') === 'user-message,interval')
+  }
+}
+
+console.log('== 16. 注入侧不接决策模型（2026-10-06 主人判定）：来了新消息就直接查库 ==')
+{
+  // 源码级守卫：这条链路上**不该**再出现对决策门的任何调用。
+  // 曾经接过一次（ask + skipSearch），被判定为多余——查库是注入链路的本职工作，
+  // 为它加一道"要不要查"的本地判断，等于在关键路径上多花 0.4~1.2 秒，还要承担"判错就漏检索"的风险。
+  const injectSrc = readFileSync(new URL('../lib/pipelines/inject.js', import.meta.url), 'utf8')
+  check('16a 注入管线没有决策门调用（ask / askWorth）', !/askWorth\(|\.ask\(/.test(injectSrc))
+  check('16b 注入管线没有跳过检索的分支（skipSearch）', !/skipSearch/.test(injectSrc))
+  check('16c 检索仍由 queryText 直接触发', /const hits = queryText\s*\n\s*\? await store\.search/.test(injectSrc))
+  check('16d 注入管线源码里不再出现 decisionGate 字样', !/decisionGate/.test(injectSrc))
+
+  // schema：注入侧的开关与门槛都已移除，写入侧的仍在
+  const c = cfgOf({})
+  check('16e features 里不再有 decisionGate 开关', c.features.decisionGate === undefined)
+  check('16f decision 里不再有注入侧 minConfidence', c.decision.minConfidence === undefined)
+  check('16g 写入侧的开关与门槛还在（不受影响）', c.features.writeGate === true && c.decision.writeMinConfidence === 0.9)
+}
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail ? 1 : 0)

@@ -1,5 +1,5 @@
-import { RuleEmbedder, RemoteEmbedder, RemoteReranker, createEmbeddingServices, cosine } from './lib/embedder.js'
-import { MemoryStore } from './lib/store.js'
+import { RuleEmbedder, RemoteEmbedder, RemoteReranker, createEmbeddingServices, cosine } from '../lib/embedder.js'
+import { MemoryStore } from '../lib/store.js'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'

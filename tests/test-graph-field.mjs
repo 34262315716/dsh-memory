@@ -14,8 +14,8 @@
 import {
   pairForce, springForce, clampSpeed, recenter, seedLayout,
   REP_C, CORE_U, SPRING_TIGHT, FIELD_DEFAULTS,
-} from './client/graph-force.js'
-import { clusterByDistance } from './client/graph-geometry.js'   // 【7b】主题团聚用（与渲染层同一个聚类器）
+} from '../client/graph-force.js'
+import { clusterByDistance } from '../client/graph-geometry.js'   // 【7b】主题团聚用（与渲染层同一个聚类器）
 
 let pass = 0, fail = 0
 const check = (name, cond) => { if (cond) { pass++; console.log(`  ✅ ${name}`) } else { fail++; console.log(`  ❌ ${name}`) } }

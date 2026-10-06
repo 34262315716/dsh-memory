@@ -1,6 +1,6 @@
 // 阶段三专项：世界线回滚（rollback）+ 时间旅行（5 项）
 // 用法: node test-phase3.mjs
-import { MemoryStore, tokenize } from './lib/store.js'
+import { MemoryStore, tokenize } from '../lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

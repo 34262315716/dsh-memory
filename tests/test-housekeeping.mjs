@@ -1,7 +1,7 @@
 // 阶段三⑥：管家子代理专项（去重扫描 / 老化报告 / 自动合并 / 边界）
 // 用法: node test-housekeeping.mjs
-import { MemoryStore } from './lib/store.js'
-import { RuleEmbedder } from './lib/embedder.js'
+import { MemoryStore } from '../lib/store.js'
+import { RuleEmbedder } from '../lib/embedder.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

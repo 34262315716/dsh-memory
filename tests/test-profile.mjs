@@ -1,8 +1,8 @@
 // 阶段四（v0.9.2）：画像分类专项——预热画像取用 / aspect 读写 / 画像蒸馏（mock LLM）
 // 用法: node test-profile.mjs（需在部署副本或 harness 环境运行，依赖 @deepseek-ai 包）
-import { apply, scopeOf } from './lib/index.js'
-import { extractWithLlm } from './lib/refiner.js'
-import { MemoryStore } from './lib/store.js'
+import { apply, scopeOf } from '../lib/index.js'
+import { extractWithLlm } from '../lib/refiner.js'
+import { MemoryStore } from '../lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -77,6 +77,12 @@ console.log('== 3. 画像蒸馏（mock LLM 返回画像 JSON） ==')
   }
   const ctx = {
     settings: { register: () => scopeMock },
+    // 真实 cordis Context 用 ctx.get(name) 取服务（lib/compat.js 的 safeGet 就是这么读的）。
+    // 这个 mock 以前只挂了 ctx.settings，于是 settingsApiOf() 判成 'absent' → 设置面从未启用、
+    // getCfg() 一路回落到组合层 base（那条 refiner 只有 { enabled:true }）。
+    // 后果：下面那两条"透传 reasoningEffort / maxTokens"的断言验的根本不是 scopeMock 里的值，
+    // 必然红——红的是 mock 与真实 Context 不同构，不是产品行为（2026-10-06 查实）。
+    get: (name) => (name === 'settings' ? ctx.settings : undefined),
     tools: { register: (tool) => { registeredTools.push(tool) } },
     on: (ev, fn) => { if (ev === 'dispose') disposeFn = fn },
     provide: () => {},
@@ -88,7 +94,7 @@ console.log('== 3. 画像蒸馏（mock LLM 返回画像 JSON） ==')
   check('memory_profile_distill 工具已注册', Boolean(distill))
   const out = await distill.execute({ limit: 5 })
   check('蒸馏返回 2 条画像', out.profiles.length === 2)
-  check('画像蒸馏 LLM 调用显式关推理（reasoningEffort=off）', llmOpts.length > 0 && llmOpts.every((o) => o.reasoningEffort === 'off'))
+  check("画像蒸馏 LLM 调用同样在 off 时不带该字段（与提取同一条规则）", llmOpts.length > 0 && llmOpts.every((o) => o.reasoningEffort === undefined))
   check('画像蒸馏 LLM 调用透传 maxTokens', llmOpts.length > 0 && llmOpts.every((o) => o.maxTokens === 800))
   check('画像 aspect 正确', out.profiles[0].aspect === 'preference' && out.profiles[1].aspect === 'background')
   const s1 = new MemoryStore(dbFile, {})
@@ -157,7 +163,9 @@ console.log('== 5. extractWithLlm（自动沉淀蒸馏）传参：显式关推�
     '[用户] 我要把密钥放凭据文件', '[助手] 好的',
   )
   check('蒸馏返回结构化记忆', r.content.includes('refs 段') && r.type === 'decision')
-  check('stream 调用带 reasoningEffort=off（防推理吞 maxTokens）', optsSeen.length === 1 && optsSeen[0].reasoningEffort === 'off')
+  // v0.16.0：配置里写 'off' 表示**不思考**，而实现方式是"根本不带这个字段"——
+  // pi-ai 的 deepseek 格式下，只要 reasoningEffort 存在（哪怕值是 'off'）就会发出 thinking:{type:'enabled'}。
+  check("stream 调用在 reasoningEffort='off' 时不带该字段（关思考靠不传）", optsSeen.length === 1 && optsSeen[0].reasoningEffort === undefined)
   check('stream 调用透传 provider/model/maxTokens', optsSeen[0].provider === 'mock' && optsSeen[0].model === 'mock' && optsSeen[0].maxTokens === 1200)
 
   // effort 缺省时不传该参数（旧配置/老内核兼容）
@@ -165,6 +173,12 @@ console.log('== 5. extractWithLlm（自动沉淀蒸馏）传参：显式关推�
   const mockLlm3 = { stream: async function* (opts) { optsSeen2.push(opts); yield { type: 'text-delta', text: '{"content": "x", "type": "note"}' } } }
   await extractWithLlm({ llm: mockLlm3 }, { refiner: { provider: 'mock', model: 'mock', maxTokens: 800 } }, '[用户] a', '[助手] b')
   check('reasoningEffort 缺省时不传参（向后兼容）', optsSeen2.length === 1 && optsSeen2[0].reasoningEffort === undefined)
+
+  // 但填了真档位就要原样透传（否则用户改不回去）
+  const optsSeen3 = []
+  const mockLlm4 = { stream: async function* (opts) { optsSeen3.push(opts); yield { type: 'text-delta', text: '{"content": "x", "type": "note"}' } } }
+  await extractWithLlm({ llm: mockLlm4 }, { refiner: { provider: 'mock', model: 'mock', reasoningEffort: 'high' } }, '[用户] a', '[助手] b')
+  check("reasoningEffort='high' 原样透传", optsSeen3.length === 1 && optsSeen3[0].reasoningEffort === 'high')
 }
 
 console.log('== 6. LLM 跑题输出 → 强化重试一次（v0.9.27） ==')

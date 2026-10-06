@@ -1,6 +1,6 @@
 // 阶段二专项回归：向量 / 图遍历 / 遗忘 / merge-purge / 社区（18 项）
 // 用法: node test-phase2.mjs
-import { MemoryStore, ruleEmbed, VEC_DIM, tokenize } from './lib/store.js'
+import { MemoryStore, ruleEmbed, VEC_DIM, tokenize } from '../lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

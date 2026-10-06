@@ -1,6 +1,6 @@
 // 阶段四（v0.9.0）：事件分类专项——时间线扫描 / 同主题合并 / 共享实体合并 / 孤立记忆 / label / 幂等 / 级联
 // 用法: node test-events.mjs
-import { MemoryStore } from './lib/store.js'
+import { MemoryStore } from '../lib/store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

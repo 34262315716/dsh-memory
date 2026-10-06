@@ -1,7 +1,7 @@
 // v0.9.11 专项：图谱「多种联系方式」——mentions 共现边 + before 演化收紧 + beforeAudit 审计清理
 // 用法: node test-edge-types.mjs
-import { MemoryStore } from './lib/store.js'
-import { buildGraphSnapshot } from './lib/graph-snapshot.js'
+import { MemoryStore } from '../lib/store.js'
+import { buildGraphSnapshot } from '../lib/graph-snapshot.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

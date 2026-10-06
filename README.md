@@ -2,7 +2,7 @@
 
 > **dsh-memory** — Advanced auto-memory plugin for DSH (DeepSeek Harness): layered memory (episodic / semantic / profile), knowledge graph, worldline versioning, vector + RAG retrieval, and incremental graph building. Local SQLite, MIT-licensed. (Body of this README is in Chinese.)
 
-DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触发**，agent 自主工作时每一步自动注入与当前任务相关的历史记忆，并在每个轮次结束时自动沉淀新记忆。
+DSH（DeepSeek Harness）进阶自动记忆插件——**用户每条消息都触发一次检索注入**（v0.16.0，可按需关掉），agent 自主工作的其余步骤按节奏补充相关记忆，并在每个轮次结束时自动沉淀新记忆。
 
 > 核心诉求：记忆不只是"清单"，而是会生长的知识网络：分层 + 图谱 + 世界线（时间维度）+ 向量语义检索。
 
@@ -10,7 +10,9 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触�
 
 | 能力 | 说明 |
 |---|---|
-| **自动注入** | `agent/pre-step` 每步检索相关记忆并 `agent.inject()`（不依赖用户消息）；节流 + 签名去抖 + 注入块 hash 去抖 + 防循环窗口 |
+| **用户消息触发检索 (v0.16.0)** | **每条用户消息（文本变了）必检一次，不受步距节流限制**。修的是这个缺口：步距按"步"计，而一轮用户消息通常只走几步——平稳档（12 步）下用户连问几句新问题，整段都在吃几句之前那次检索的结果。工具步与自主轮次仍按步距节奏，两条触发源共用下游的检索/预算/去抖（日志 `trigger: user-message \| interval` 可逐条对账） |
+| **写入侧决策门 (v0.16.0)** | **只在写入侧**：轮次结束时问一次本机决策模型（StartLux-Decision 9B，HTTP 8090，输出 0 token，实测 0.3~0.9 秒）「这段对话值得记吗」，答"不值得"就省掉那次几十秒的 LLM 提取（改落一条 ep 快照，记录不丢）。**非对称采信**——只有它高把握说"不值得"（门槛默认 0.9）才起作用；服务没起 / 超时 / 返回形状不对 / 没把握 / 本轮被取消一律照常提取，失败后冷却 5 分钟。**检索路径上没有决策门**（2026-10-06 定）：用户消息来了就直接查库，不问"要不要查"——查库是本职，加一道判断只会在关键路径上多花 0.4~1.2 秒，还要承担"判错就漏检索"的风险 |
+| **自动注入** | `agent/pre-step` 检索相关记忆并**并入本步 decision**（不额外占一个回合）；常驻块 + 检索块 token 预算独立 + 块 hash 去抖 + 防循环窗口 |
 | **自动沉淀** | `turn/end` 写入 + 价值门过滤 + Jaccard 去重合并（相似记忆更新而非新建） |
 | **分层记忆** | `ep`（情景，turn 快照）/ `sm`（语义，长期知识），**scope 项目隔离**：按会话工作目录自动分层（workspaceRegistry fallback），画像跨项目公共层 |
 | **时间维度（世界线）** 🐛 | 更新追加版本，旧版本保留但隐藏（不参与检索/注入）；`maxVersions` 滚动裁旧 + 回滚链 |
@@ -22,7 +24,7 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**无需用户消息触�
 | **事件分类** | 时间连续 + 因果相关（同主题/共享实体）的记忆聚簇——"这段记忆属于哪件事"（区别于 theme 的"在讲什么"）；时间线扫描纯 rule 算法，管家自动维护；`memory_events` 工具 + 图谱事件筛选/高亮 |
 | **画像分类** | 关于用户本人的稳定信息（身份/偏好/习惯/背景/沟通方式）单独分类：type=profile + aspect 子域；refiner 自动识别；**会话预热画像优先注入**（"用户是谁"优先于"最近干了啥"）；`memory_profile_distill` 画像蒸馏 |
 | **运行日志** | 背后运行了什么完全透明可见：写入/注入/检索/巡检/蒸馏/错误全链路埋点；GUI「记忆日志」面板（侧边栏入口 + 3s 轮询 + 筛选）+ `memory_logs` 工具 + `/dsh-memory/logs` API |
-| **LLM 蒸馏（refiner）** | 独立模型把高噪声轮次提取为自包含结论（决策/偏好/教训分类）+ **双输出（v0.10.0）**：`abstract` 抽象层级（principle=可复用原则/方法 / event=一次性事件产出）+ `theme` 名词标签（如"四级备考"）；失败自动降级规则路径；**v0.12.0 重做提取**：思考档（默认 `low`）+ **不设 token 上限**（`maxTokens: 0`）+ **2 分钟时间预算，掐断后带已写内容续跑**（断点续思）+ 先写 `analysis` 判断再产出 **0-3 条** items + 寒暄/空转轮次直接不记 |
+| **LLM 蒸馏（refiner）** | 独立模型把高噪声轮次提取为自包含结论（决策/偏好/教训分类）+ **双输出（v0.10.0）**：`abstract` 抽象层级（principle=可复用原则/方法 / event=一次性事件产出）+ `theme` 名词标签（如"四级备考"）；失败自动降级规则路径；**v0.12.0 重做提取**：**不设 token 上限**（`maxTokens: 0`）+ **2 分钟时间预算，掐断后带已写内容续跑**（断点续思）+ 先写 `analysis` 判断再产出 **0-3 条** items + 寒暄/空转轮次直接不记；**v0.16.0 起默认不思考**（`reasoningEffort: off`，实测关掉后同一次请求 2593ms→957ms、`reasoning_tokens` 47→0——省时省钱，提取本身不受影响） |
 | **注入加权（v0.10.0）** | 检索双维 boost：画像 ×3 + principle ×1.5（方法优先）/ event ×0.7（强相关才注入）——"我怎么看待设计"优先于"设计了什么"；预热同序 |
 | **降级记忆重写 (v0.12.6)** | 提取瘫痪期间写下的「任务/结果」式降级产物，用修好的提取器**重新处理成正常记忆**（更新原条目、旧文进世界线可回滚；判定无价值的则归档）。工具 `memory_reprocess` 默认只预演，可分批续跑（**v0.14.0 从 `memory_rewrite` 改名**：那名字与 DSH 内核自带的 `memory_rewrite` 撞车，同进程里互相遮蔽） |
 | **会话级汇总 (v0.12.2)** | 逐轮提取之外再补一层："整段会话最后落在哪里"——攒够 N 轮把这段对话交回模型总结成 0-3 条结论（同一个决定被反复修改过，只写最后落定的那个）；与逐轮碎片互补 |
@@ -146,15 +148,19 @@ dsh plugin --profile web add ./dsh-memory
 
 ### 🔁 开发期部署（改完仓库 ≠ 线上生效）
 
-一条命令带来两种部署形态，别混：
+三种形态，**先认清楚跑的是哪一份**再动手：
 
 - **方式一（`dsh plugin add`）**：包作为 pnpm 依赖装在 profile 里，改仓库**不会**影响线上，要重新 `add`（或让 pnpm 走本地链接）。
-- **方式二（手工挂载）**：包是 profile `node_modules` 里的一个目录，改完仓库必须同步到部署副本 —— 用仓库自带的部署脚本（它也只会同步方式二的副本）：
+- **方式二（Junction / 符号链接）**：profile 的 `node_modules/dsh-memory` 指向仓库，**改仓库即改线上代码**——只需重启该实例（客户端改动再刷新页面）。查法：`Get-Item "<profile>\node_modules\dsh-memory" | Select LinkType,Target`。2026-10-06 实测本机 `web-2` 就是这种（Junction → 开发目录），所以那次改动根本不需要同步副本。
+- **方式三（手工副本）**：包是 profile `node_modules` 里的真实目录，改完仓库必须同步进去——用仓库自带脚本（它只认默认 `~/.dsh` 下的那份副本）：
 
 ```bash
-node tools/deploy.mjs           # 同步 lib/ 并复验 md5
-node tools/deploy.mjs --check   # 只比对（有漂移退出码 1，可用于收尾自检）
+node tools/deploy.mjs                     # 同步 lib/ 与 package.json 并复验 md5
+node tools/deploy.mjs --check             # 只比对（有漂移退出码 1，可用于收尾自检）
+node tools/deploy.mjs --profile <name>    # 换 profile（默认 web-desktop）
 ```
+
+> ⚠️ `deploy.mjs` 的目标写死为 `~/.dsh/profiles/<profile>/node_modules/dsh-memory`。**DSH_HOME 不在默认位置时，它认不出真正在跑的那个实例**：2026-10-06 实测 `DSH_HOME` 指向别处的 `web-2` 走 Junction，而脚本默认指向默认家目录下一份停在 0.13.3 的旧副本。先按端口查进程命令行（`Get-NetTCPConnection -LocalPort <port> | Select OwningProcess` → `Get-CimInstance Win32_Process`）确认 DSH_HOME 与 profile，再决定要不要同步。
 
 > 2026-09-17 抓到一次真实漂移：仓库已含 v0.9.31 的降级保护（`degraded` 禁破坏性维度迁移 + 30s 超时），部署副本还停在 9/8 的旧版——于是向量表被 rule 兜底迁移成 256 维，**向量路实际已瘫**，日志里只有一行 warning。改 `lib/` 后先 `--check` 再收工。重启 DSH 才生效（客户端 `lib/client.js` 改动只需刷新页面 + 重建产物 `node build-client.mjs`）。
 
@@ -175,16 +181,25 @@ memory:
     valueGate: true         # 价值门（噪音过滤）
     dedupMerge: true        # 去重合并
     preStepInject: true     # pre-step 自动注入
+    userMessageTrigger: true # v0.16.0 每条用户消息都重新检索一次（不看步距）；关掉则回到纯步距节奏
+    writeGate: true         # v0.16.0 轮次结束先预筛"这段对话值得记吗"（只有高把握说不值得才省 LLM）
     manageTools: true       # 管理工具集
     time: true              # 时间维度（版本化世界线）
     graph: true             # 图谱构建
+  decision:                 # v0.16.0 写入侧决策门（本机 StartLux-Decision 的接入参数；检索路径不用它）
+    endpoint: http://127.0.0.1:8090/v1/systemone
+    timeoutMs: 2000         # 单次判断超时（200~10000）；到点即放弃、照常提取
+    writeMinConfidence: 0.9 # 采信门槛（0.5~0.99）：只有把握度不低于它才采信"不值得记"
   refiner:
     enabled: false          # LLM 蒸馏提取（默认关，省成本）
     provider: deepseek-official  # 供应商（GUI 下拉预设）
     model: deepseek-v4-flash
     apiKeyEnv: MEMORY_REFINER_API_KEY  # 独立密钥槽（供应商未声明 apiKeyEnv 时生效）
-    reasoningEffort: low    # 推理档位（v0.12.0 由 off 改为 low）。注意 off ≠ 关思考：
-                            # 适配器把 off 当「不传参数」，思考型模型照样思考、照样吃预算
+    reasoningEffort: off    # v0.16.0 默认不思考。⚠️ 这里的 off 由插件翻译成「不带该参数」——
+                            # pi-ai 的 deepseek 格式下，只要该字段存在（哪怕是 'off'）就会发出
+                            # thinking:{type:'enabled'}；不带它才会按模型的 off 映射发 disabled。
+                            # 还要求 provider 侧给该模型声明非 null 的 off 映射（本机已声明，
+                            # 见 README §开发期部署 同级的 profile 配置）。改回思考就填 low/high/max
     maxTokens: 0            # v0.12.0：0 = 不限制（不传该参数）。约束交给下面的时间预算
     timeBudgetMs: 120000    # v0.12.0：单次调用时间预算（2 分钟）；到点掐断并带已写内容续跑
     maxContinuations: 3     # v0.12.0：续跑轮数上限（续跑写不出东西会自动停）
@@ -251,31 +266,32 @@ memory:
 ## 🧪 测试
 
 ```bash
-node test.mjs         # 阶段一回归（16 项）
-node test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
-node test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
-node test-embedder.mjs # 嵌入/重排 seam 单测（24 项：rule/remote/缓存/降级链/rerank 融合与缓存/向量独有命中/真实 API 验「当前配置的模型」）
-node test-health.mjs  # 连通性自检专项（26 项：探针真发请求/402 原文透传/降级态显形/未启用不假检/不抛错/端点日志行字段名对齐）
-node test-refiner-thinking.mjs # 提取器专项（50 项：不设 token 上限/思考流收集/时间预算掐断+断点续跑/空输出救回/不接话即停/续跑上限/跑题重试/多条目与旧格式/items 空不写库/价值门/关键词泛词过滤）
-node test-housekeeping.mjs # 管家/存储专项（30 项：去重/老化/meta/触发/touch/迁移幂等/多 scope/日志）
-node test-events.mjs    # 事件分类专项（21 项：时间线扫描/聚合切分/幂等/级联/gap 敏感/before 方向修正/主题过滤/空库）
-node test-tool-add.mjs  # 工具写入专项（20 项：memory_add 必走图谱连边/关图与 ep 不连/abstract+theme 透传/2-gram 碎片过滤/content 归一化/写后可检索）
-node test-governance.mjs # 管家治理专项（53 项：归档退出检索且可恢复/归并是合成不是堆叠/源记忆归档不删除/并查集成团/dryRun 与 apply 边界/陈旧 ep 判据/stats 分开计数/memory_archive list+restore/归并器）
-node test-rewrite.mjs   # 降级记忆重写专项（15 项：任务/结果拆分 / 候选筛选防空数组假通过 / 重写走更新且旧文进世界线）
-node test-conversation-flow.mjs # 对话流程专项（27 项：纠正走更新既有记忆而非新建/旧内容进世界线可回滚/模型编的 id 改不动无关记忆/混合一轮/supersedes 清洗/提取时可见已知记忆/会话级汇总只收结论）
-node test-incremental.mjs # 增量构建专项（21 项：主题聚类增量/事件水位线增量/尾部合并/旧事件保留/维度迁移自愈/全量对齐）
-node test-update-append.mjs # 更新拼接专项（9 项：更新内容无条件接末尾/持续追加/重复片段去重/+N 版本步进）
-node test-edge-types.mjs   # 边类型专项（9 项：mentions 共现快照/before 收紧/泛词与跨主题不连/beforeAudit dryRun+apply）
-node test-keyword-filter.mjs # 关键词稀有化专项（8 项：pickRareEntities 剔泛词/稀缺升序/graphLink 硬过滤/单实体与停用词不建）
-node test-profile.mjs   # 画像分类专项（16 项：scopeOf 三态/预热画像/aspect 读写/蒸馏 mock LLM；需副本环境）
-node test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
-node test-link-suggest.mjs    # 语义连边判定专项（18 项：四道闸门/去重/上限/层级/确定性；纯函数）
-node test-semantic-links.mjs  # 语义连边集成专项（11 项：真实 store + 构造向量，覆盖 KNN/MNN/落边/回滚口径）
-node test-graph-geometry.mjs # 主题区域几何 + 布局缓存 + 布局策略专项（66 项：凸包贴合/外扩精度/最小外接圆最优性与确定性/就地聚簇/密度核心/平移跟随；纯函数，无需副本环境）
-node test-graph-field.mjs # 图谱力模型 + 种子装箱专项（56 项：邻域场零点与单调性/塌陷护栏（引力累加 vs 斥力封顶）/标度不变/各向同性/限速/种子确定性与分量团聚/同主题两层层内紧外松/600 点真实尺度零重叠；纯函数）
-node test-inject-pipeline.mjs # 注入管线专项（105 项：decision 合并注入/步距必检/三档节奏（激进 4·平稳 12·懒惰 30）/自定义档/档位表与 UI 同源/日志 interval/去抖/兜底/守卫/reject）
+node tests/test.mjs         # 阶段一回归（16 项）
+node tests/test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
+node tests/test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
+node tests/test-embedder.mjs # 嵌入/重排 seam 单测（24 项：rule/remote/缓存/降级链/rerank 融合与缓存/向量独有命中/真实 API 验「当前配置的模型」）
+node tests/test-health.mjs  # 连通性自检专项（26 项：探针真发请求/402 原文透传/降级态显形/未启用不假检/不抛错/端点日志行字段名对齐）
+node tests/test-refiner-thinking.mjs # 提取器专项（50 项：不设 token 上限/思考流收集/时间预算掐断+断点续跑/空输出救回/不接话即停/续跑上限/跑题重试/多条目与旧格式/items 空不写库/价值门/关键词泛词过滤）
+node tests/test-housekeeping.mjs # 管家/存储专项（30 项：去重/老化/meta/触发/touch/迁移幂等/多 scope/日志）
+node tests/test-events.mjs    # 事件分类专项（21 项：时间线扫描/聚合切分/幂等/级联/gap 敏感/before 方向修正/主题过滤/空库）
+node tests/test-tool-add.mjs  # 工具写入专项（20 项：memory_add 必走图谱连边/关图与 ep 不连/abstract+theme 透传/2-gram 碎片过滤/content 归一化/写后可检索）
+node tests/test-governance.mjs # 管家治理专项（53 项：归档退出检索且可恢复/归并是合成不是堆叠/源记忆归档不删除/并查集成团/dryRun 与 apply 边界/陈旧 ep 判据/stats 分开计数/memory_archive list+restore/归并器）
+node tests/test-rewrite.mjs   # 降级记忆重写专项（15 项：任务/结果拆分 / 候选筛选防空数组假通过 / 重写走更新且旧文进世界线）
+node tests/test-conversation-flow.mjs # 对话流程专项（27 项：纠正走更新既有记忆而非新建/旧内容进世界线可回滚/模型编的 id 改不动无关记忆/混合一轮/supersedes 清洗/提取时可见已知记忆/会话级汇总只收结论）
+node tests/test-incremental.mjs # 增量构建专项（21 项：主题聚类增量/事件水位线增量/尾部合并/旧事件保留/维度迁移自愈/全量对齐）
+node tests/test-update-append.mjs # 更新拼接专项（9 项：更新内容无条件接末尾/持续追加/重复片段去重/+N 版本步进）
+node tests/test-edge-types.mjs   # 边类型专项（9 项：mentions 共现快照/before 收紧/泛词与跨主题不连/beforeAudit dryRun+apply）
+node tests/test-keyword-filter.mjs # 关键词稀有化专项（8 项：pickRareEntities 剔泛词/稀缺升序/graphLink 硬过滤/单实体与停用词不建）
+node tests/test-profile.mjs   # 画像分类专项（16 项：scopeOf 三态/预热画像/aspect 读写/蒸馏 mock LLM；需副本环境）
+node tests/test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
+node tests/test-link-suggest.mjs    # 语义连边判定专项（18 项：四道闸门/去重/上限/层级/确定性；纯函数）
+node tests/test-semantic-links.mjs  # 语义连边集成专项（11 项：真实 store + 构造向量，覆盖 KNN/MNN/落边/回滚口径）
+node tests/test-graph-geometry.mjs # 主题区域几何 + 布局缓存 + 布局策略专项（66 项：凸包贴合/外扩精度/最小外接圆最优性与确定性/就地聚簇/密度核心/平移跟随；纯函数，无需副本环境）
+node tests/test-graph-field.mjs # 图谱力模型 + 种子装箱专项（56 项：邻域场零点与单调性/塌陷护栏（引力累加 vs 斥力封顶）/标度不变/各向同性/限速/种子确定性与分量团聚/同主题两层层内紧外松/600 点真实尺度零重叠；纯函数）
+node tests/test-inject-pipeline.mjs # 注入管线专项（138 项：用户消息触发必检/同文本不重复检索/两条触发源对账/注入侧不接决策模型（源码级守卫）/decision 合并注入/步距必检/三档节奏（激进 4·平稳 12·懒惰 30）/自定义档/档位表与 UI 同源/去抖/兜底/守卫/reject）
+node tests/test-write-gate.mjs # 写入侧决策门专项（41 项：上半场假门驱动管线——高把握"不值得"才省 LLM 且仍落 ep 快照/值得·没把握·服务不在·门抛错一律照常提取/关掉不问/太短不问；下半场真 HTTP 假服务——采信门槛与降级链/请求体形状与截断/HTTP 错·非 JSON·缺字段·超时·连不上/取消不设冷却/失败冷却）
                           # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行
-node test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
+node tests/test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
 node rebuild-graph.mjs # 图谱重建运维脚本（真嵌入归一化重建 + 语义边）
 ```
 

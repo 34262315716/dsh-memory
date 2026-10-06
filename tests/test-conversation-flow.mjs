@@ -10,10 +10,10 @@
  * 本套件钉住：纠正走"更新既有记忆"（旧内容进世界线可回滚）、模型编的 id 改不动无关记忆、
  * 汇总真的把整段会话当输入且只收结论。
  */
-import { MemoryStore, VEC_DIM } from './lib/store.js'
-import { RuleEmbedder } from './lib/embedder.js'
-import { applyExtractedItems } from './lib/pipelines/write.js'
-import { extractWithLlm, summarizeSessionWithLlm, normalizeItems } from './lib/refiner.js'
+import { MemoryStore, VEC_DIM } from '../lib/store.js'
+import { RuleEmbedder } from '../lib/embedder.js'
+import { applyExtractedItems } from '../lib/pipelines/write.js'
+import { extractWithLlm, summarizeSessionWithLlm, normalizeItems } from '../lib/refiner.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

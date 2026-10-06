@@ -9,10 +9,10 @@
  *   只归档不删除（可恢复）· 归并是"合成一条新结论"不是"堆叠" · 归档后彻底退出检索 ·
  *   陈旧情景快照有清理口 · 分组是"一团"而不是"一对"。
  */
-import { MemoryStore, VEC_DIM } from './lib/store.js'
-import { RuleEmbedder } from './lib/embedder.js'
-import { groupSimilarPairs, mergeMemoriesWithLlm } from './lib/refiner.js'
-import { registerHousekeepingTools } from './lib/tools/housekeeping.js'
+import { MemoryStore, VEC_DIM } from '../lib/store.js'
+import { RuleEmbedder } from '../lib/embedder.js'
+import { groupSimilarPairs, mergeMemoriesWithLlm } from '../lib/refiner.js'
+import { registerHousekeepingTools } from '../lib/tools/housekeeping.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

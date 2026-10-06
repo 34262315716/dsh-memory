@@ -1,15 +1,17 @@
 /**
  * v0.12 提取器专项：思考档 + 不设 token 上限 + 时间预算掐断 + 断点续思。
  *
- * 背景（2026-09-21 事故复盘）：pi-ai 适配器把 `reasoningEffort:'off'` 翻译成「省略参数」，
- * 上游 deepseek-v4.1-flash 默认强制思考，把 maxTokens=800 全部吃成 reasoning_tokens，
- * 正文 0 字 → JSON.parse('') → 自 2026-09-16 起蒸馏 100% 失败、全部静默降级。
+ * 背景（2026-09-21 事故复盘）：没有有效关掉思考，上游 deepseek-v4.1-flash 默认思考，
+ * 把 maxTokens=800 全部吃成 reasoning_tokens，正文 0 字 → JSON.parse('') → 自 2026-09-16 起
+ * 蒸馏 100% 失败、全部静默降级。
+ * 2026-10-06 补记（结论已更正）：真正的关法是**不传 reasoningEffort + 模型声明非 null 的 off 映射**，
+ * 适配器才会发出 thinking:{type:'disabled'}；传 'off' 会适得其反（见 lib/refiner.js 文件头 ①）。
  *
  * 本套件把"修好之后必须一直成立"的行为钉住：不设上限、思考流要收、掐断要能接上、
  * 空输出要能救回来、接不上要停、条目要能多条、寒暄要挡住。
  */
-import { llmStrictJson, extractWithLlm, normalizeItems, pickKeywords } from './lib/refiner.js'
-import { isTrivialTurn } from './lib/pipelines/write.js'
+import { llmStrictJson, extractWithLlm, normalizeItems, pickKeywords, reasoningParam } from '../lib/refiner.js'
+import { isTrivialTurn } from '../lib/pipelines/write.js'
 
 let pass = 0
 let fail = 0
@@ -273,6 +275,18 @@ console.log('== 11. 关键词兜底：泛词/虚词不再进库 ==')
   check('保留具体实体', kw.includes('tile_count') && kw.includes('overlap'))
   check('数量有上限（默认 8）', pickKeywords('a1 b2 c3 d4 e5 f6 g7 h8 i9 j10', 8).length <= 8)
   check('纯数字碎片被滤掉', !pickKeywords('1234 5.6% 7').includes('1234'))
+}
+
+console.log('== 0b. reasoningParam（v0.16.0）：把 off 翻译成"不带字段" ==')
+{
+  // 本插件最反直觉的一处约定，单独钉住：pi-ai 的 deepseek 格式里，
+  // 只要 reasoningEffort 存在（哪怕值是 'off'）就会发 thinking:{type:'enabled'} —— 想关反而打开。
+  check("'off' → 不带字段（空对象）", Object.keys(reasoningParam('off')).length === 0)
+  check("'OFF' / ' off ' 同样处理（大小写与空白）", Object.keys(reasoningParam(' OFF ')).length === 0)
+  check("'none' / 'false' 也当关（宽容写法）", Object.keys(reasoningParam('none')).length === 0 && Object.keys(reasoningParam('false')).length === 0)
+  check('空串 / undefined / null → 不带字段', Object.keys(reasoningParam('')).length === 0 && Object.keys(reasoningParam(undefined)).length === 0 && Object.keys(reasoningParam(null)).length === 0)
+  check("'low' / 'high' 原样透传（用户能改回思考）", reasoningParam('low').reasoningEffort === 'low' && reasoningParam('high').reasoningEffort === 'high')
+  check('非字符串（数字/对象）→ 不带字段（不猜）', Object.keys(reasoningParam(5)).length === 0 && Object.keys(reasoningParam({})).length === 0)
 }
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败')

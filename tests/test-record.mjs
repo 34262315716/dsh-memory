@@ -6,8 +6,8 @@
 // 用法：node test-record.mjs            # 临时库自检（用真实凭据，不碰生产库）
 //       node test-record.mjs --live     # 在生产库上自检（只读检索，不写入）
 // ============================================================
-import { MemoryStore, GRAPH_STOP_WORDS, tokenize } from './lib/store.js'
-import { RuleEmbedder, RemoteEmbedder, cosine } from './lib/embedder.js'
+import { MemoryStore, GRAPH_STOP_WORDS, tokenize } from '../lib/store.js'
+import { RuleEmbedder, RemoteEmbedder, cosine } from '../lib/embedder.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'

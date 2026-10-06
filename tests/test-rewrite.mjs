@@ -7,9 +7,9 @@
  * 本套件钉住：拆分正确、候选筛选正确（只认降级产物且排除已归档/太短）、
  * 预演不写库、重写走更新（旧文进世界线）。
  */
-import { MemoryStore, VEC_DIM } from './lib/store.js'
-import { RuleEmbedder } from './lib/embedder.js'
-import { splitDegraded, degradedCandidates } from './lib/tools/rewrite.js'
+import { MemoryStore, VEC_DIM } from '../lib/store.js'
+import { RuleEmbedder } from '../lib/embedder.js'
+import { splitDegraded, degradedCandidates } from '../lib/tools/rewrite.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

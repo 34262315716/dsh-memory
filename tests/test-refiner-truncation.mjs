@@ -15,7 +15,7 @@
  *   ③ 修不了时，诊断必须指名道姓（max-tokens + maxTokens 建议 + 当前配置值）
  *   ④ 续跑语义不能被这次改动破坏
  */
-import { llmStrictJson, parseJsonLoose, repairTruncatedJson, fmtFinish } from './lib/refiner.js'
+import { llmStrictJson, parseJsonLoose, repairTruncatedJson, fmtFinish } from '../lib/refiner.js'
 
 let pass = 0
 let fail = 0
