@@ -13,7 +13,7 @@ DSH（DeepSeek Harness）进阶自动记忆插件：分层记忆（情景/语义
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dsh-memory** (1712 symbols, 5467 relationships, 82 execution flows).
+This project is indexed by GitNexus as **dsh-memory** (3328 symbols, 11429 relationships, 172 execution flows).
 
 > Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
 
