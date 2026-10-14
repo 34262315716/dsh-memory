@@ -277,16 +277,37 @@ console.log('== 11. 关键词兜底：泛词/虚词不再进库 ==')
   check('纯数字碎片被滤掉', !pickKeywords('1234 5.6% 7').includes('1234'))
 }
 
-console.log('== 0b. reasoningParam（v0.16.0）：把 off 翻译成"不带字段" ==')
+console.log('== 0b. reasoningParam（v0.16.0）：pi-ai 路由把 off 翻译成"不带字段" ==')
 {
   // 本插件最反直觉的一处约定，单独钉住：pi-ai 的 deepseek 格式里，
   // 只要 reasoningEffort 存在（哪怕值是 'off'）就会发 thinking:{type:'enabled'} —— 想关反而打开。
+  // 注意这些断言都**不传 provider**：按协议分派后，不传 provider 走的就是 pi-ai 姿势（= v0.16.0 旧行为）。
   check("'off' → 不带字段（空对象）", Object.keys(reasoningParam('off')).length === 0)
   check("'OFF' / ' off ' 同样处理（大小写与空白）", Object.keys(reasoningParam(' OFF ')).length === 0)
   check("'none' / 'false' 也当关（宽容写法）", Object.keys(reasoningParam('none')).length === 0 && Object.keys(reasoningParam('false')).length === 0)
   check('空串 / undefined / null → 不带字段', Object.keys(reasoningParam('')).length === 0 && Object.keys(reasoningParam(undefined)).length === 0 && Object.keys(reasoningParam(null)).length === 0)
   check("'low' / 'high' 原样透传（用户能改回思考）", reasoningParam('low').reasoningEffort === 'low' && reasoningParam('high').reasoningEffort === 'high')
   check('非字符串（数字/对象）→ 不带字段（不猜）', Object.keys(reasoningParam(5)).length === 0 && Object.keys(reasoningParam({})).length === 0)
+  check('opencode-go 路由同样走 pi-ai 姿势', Object.keys(reasoningParam('off', 'opencode-go')).length === 0)
+}
+
+console.log('== 0c. reasoningParam（v0.16.1）：官方 Messages 路由的 off 必须**显式传** ==')
+{
+  // 2026-10-12 事故：提取切到 deepseek-official 后批量失败（一天 0 成功 / 16 失败，
+  // 思考 55140/57042 字而正文仅 820/2036 字，4 次调用约 150 秒全烧在思考上）。
+  // 根因：dsh-llm-deepseek/lib/index.js:1694 的回落链在未配 reasoningEffort/thinking 时落到 'high'，
+  // 于是"不传字段"= 打开高思考；只有显式传 'off' 才拿到 thinking:{type:'disabled'}（1707 行）。
+  check("官方路由 'off' → **显式传** off（与 pi-ai 相反）", reasoningParam('off', 'deepseek-official').reasoningEffort === 'off')
+  check('官方路由档位未给（undefined）→ 仍显式传 off（不传会回落 high）', reasoningParam(undefined, 'deepseek-official').reasoningEffort === 'off')
+  check('官方路由空串 → 同样显式传 off', reasoningParam('', 'deepseek-official').reasoningEffort === 'off')
+  check("官方路由 'low'/'high' 原样透传", reasoningParam('low', 'deepseek-official').reasoningEffort === 'low' && reasoningParam('high', 'deepseek-official').reasoningEffort === 'high')
+  check('路由名匹配大小写不敏感', reasoningParam('off', 'DeepSeek-Official').reasoningEffort === 'off')
+  check('路由名片段匹配：名字含名单片段即命中（deepseek-official-beta）', reasoningParam('off', 'deepseek-official-beta').reasoningEffort === 'off')
+  check('名单外名字不命中（deepseek-api 需用户自己加进名单）', Object.keys(reasoningParam('off', 'deepseek-api')).length === 0)
+  check('非官方路由不受影响（opencode-go 仍不带字段）', Object.keys(reasoningParam('off', 'opencode-go')).length === 0)
+  check('messagesProviders 可配：清空即回到 pi-ai 姿势', Object.keys(reasoningParam('off', 'deepseek-official', [])).length === 0)
+  check('messagesProviders 可配：自定义名单生效', reasoningParam('off', 'my-messages-route', ['my-messages']).reasoningEffort === 'off')
+  check('空 provider → 不误判（走 pi-ai 姿势）', Object.keys(reasoningParam('off', '')).length === 0)
 }
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败')

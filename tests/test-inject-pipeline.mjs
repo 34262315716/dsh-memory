@@ -684,7 +684,8 @@ console.log('== 16. 注入侧不接决策模型（2026-10-06 主人判定）：�
   const c = cfgOf({})
   check('16e features 里不再有 decisionGate 开关', c.features.decisionGate === undefined)
   check('16f decision 里不再有注入侧 minConfidence', c.decision.minConfidence === undefined)
-  check('16g 写入侧的开关与门槛还在（不受影响）', c.features.writeGate === true && c.decision.writeMinConfidence === 0.9)
+  // v0.16.1：writeGate 默认值由 true 改成 false（决策服务一般不开），但开关与门槛都还在
+  check('16g 写入侧的开关与门槛还在（不受影响）', c.features.writeGate === false && c.decision.writeMinConfidence === 0.9)
 }
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail ? 1 : 0)

@@ -3,7 +3,7 @@
  * 原 client/index.jsx 拆分（v0.10 解耦），注册到 settings.section 插槽。
  * 用 ctx.settingsScope 读写 settings.yaml 的 `memory` 命名空间，live 生效。
  */
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, Children, cloneElement, isValidElement } from 'react'
 
 /** 命名空间快照容错：未注册/读取失败时返回空对象（供应商目录为空也不崩）。 */
 const safeSnapshot = (scope) => {
@@ -36,7 +36,7 @@ const FEATURE_FIELDS = [
   ['dedupMerge', '去重合并', '相似记忆更新而非新建'],
   ['preStepInject', '自动注入', 'pre-step 每步自动注入相关记忆'],
   ['userMessageTrigger', '用户消息触发检索', '每条用户消息都重新检索一次（不受步距节流限制）；关掉则只按注入节奏数步'],
-  ['writeGate', '写入前预筛', '轮次结束时先问一次决策模型「这段对话值得记吗」；只有它高把握说"不值得"才省掉这次 LLM 提取，改落规则快照'],
+  ['writeGate', '写入前预筛', '默认关。开启前需先启动本机决策服务（127.0.0.1:8090），否则每轮写入都会白等一次失败请求；开启后它高把握判"不值得记"才省掉这次 LLM 提取，改落规则快照'],
   ['manageTools', '管理工具集', '暴露 memory_* 工具给模型'],
   ['time', '时间维度', '更新追加版本（世界线），关闭则直接覆盖（需重启 DSH 生效）'],
   ['graph', '图谱构建', '实体节点 + 共现边'],
@@ -59,6 +59,8 @@ const REFINER_FIELDS = [
   ['maxTokens', '输出上限（token）', '0 = 不限制（默认，由时间预算兜底）；只有需要硬性限长时才填正数'],
   ['timeBudgetMs', '单次时间预算（毫秒）', '到点掐断，把已写内容带回去续跑（默认 120000 = 2 分钟）'],
   ['maxContinuations', '续跑轮数上限', '掐断/空输出后最多再接着写几次（默认 3）'],
+  ['transientRetries', '瞬时故障重试次数', '0~5，默认 2：只对网络中断/5xx/上游流畸形这类抖动重发（丢弃不可逆，重发一次常能救回）；配额 429 与格式错 400 不重发'],
+  ['transientBackoffMs', '重试退避（毫秒）', '默认 800：第 n 次等 base×2^(n-1)，封顶 8 秒；填 0 = 立即重发'],
 ]
 
 /** 嵌入模型字段（embedding 子对象，对应 settings schema）。 */
@@ -113,7 +115,14 @@ const LOGGING_FIELDS = [
   ['maxRows', '日志保留条数', '惰性裁剪上限（100~10000，默认 2000）'],
 ]
 
-const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'field', 'spacing', 'attract', 'maxSpeed', 'damping', 'range', 'wobble', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays', 'gapHours', 'maxRows', 'maxTokens', 'timeBudgetMs', 'maxContinuations', 'timeoutMs', 'writeMinConfidence'])
+const NUMERIC_SUB = new Set(['cacheSize', 'topK', 'minCandidates', 'rrfWeight', 'spring', 'field', 'spacing', 'attract', 'maxSpeed', 'damping', 'range', 'wobble', 'interval', 'maxIntervalHours', 'dedupThreshold', 'agingDays', 'gapHours', 'maxRows', 'maxTokens', 'timeBudgetMs', 'maxContinuations', 'transientRetries', 'transientBackoffMs', 'timeoutMs', 'writeMinConfidence', 'dialogChars', 'knownChars', 'knownTopN'])
+
+/**
+ * 子对象里的**非数值**字段（v0.16.2）。
+ * 数值校验的判据是「在 NUMERIC_SUB 里」，所以字符串枚举与数组必须显式列进来，
+ * 否则 `messagesProviders: "deepseek-official"` 会被当成非法数字、把保存按钮锁死。
+ */
+const TEXT_SUB = new Set(['preheatRoute', 'webFence', 'messagesProviders', 'themeShape', 'themeScope', 'provider', 'model', 'baseUrl', 'apiKeyEnv', 'endpoint', 'reasoningEffort'])
 
 /**
  * 宿主设计令牌（主题包注入 :root 的 --dsw-alias-*）。
@@ -136,6 +145,13 @@ const T = {
   err: 'var(--dsw-alias-state-error-primary)',
 }
 
+/**
+ * 分区样式（模块级，v0.16.2 提到顶层）：`Section` 与主组件都要用。
+ * 原生设置页是「标题 + 分隔线」而非卡片，所以用 border-top 造节奏，不自铺背景层（v0.11.1）。
+ */
+const blockStyle = { marginTop: 22, paddingTop: 16, borderTop: `1px solid ${T.line}` }
+const blockTitle = { margin: '0 0 4px', fontWeight: 600, fontSize: 14, color: T.label }
+
 function Field({ label, hint, children }) {
   return (
     <label style={{ display: 'block', margin: '10px 0' }}>
@@ -143,6 +159,38 @@ function Field({ label, hint, children }) {
       {hint ? <span style={{ display: 'block', color: T.sub, fontSize: 12, lineHeight: '18px', marginTop: 2 }}>{hint}</span> : null}
       {children}
     </label>
+  )
+}
+
+/**
+ * 可折叠分组（v0.16.2 设置界面整理）。
+ *
+ * 为什么需要它：本插件有 76 个配置项、原先 11 个区块全平铺——打开设置页要滚很久，
+ * 而其中真正会改的只有几个。折叠把「不常动的」收起来，页面长度从 11 屏降到 1 屏左右。
+ *
+ * 用 <details>/<summary> 而不是自研折叠：原生元素自带键盘可达性与语义（读屏能正确播报
+ * "折叠/展开"），也不需要维护 open 状态——状态归浏览器管，页面刷新后重置为默认，
+ * 这对"设置页"是合适的行为。
+ */
+function Section({ title, hint, children, defaultOpen = false }) {
+  // 双线问题：Section 自己有上分隔线，内部第一个区块也带一条 —— 紧挨着会出现两条平行细线。
+  // 这里把**首个子元素**的 borderTop 去掉（只改样式，不改结构），视觉上只剩 Section 那一条。
+  const kids = Children.toArray(children)
+  const first = kids[0]
+  if (isValidElement(first) && first.props?.style) {
+    const { borderTop, ...restStyle } = first.props.style
+    kids[0] = cloneElement(first, { style: { ...restStyle, borderTop: 'none', marginTop: 0 } })
+  }
+  return (
+    <details open={defaultOpen} style={{ ...blockStyle, paddingTop: 14 }}>
+      {/* 用原生 <summary>：浏览器自带的开合三角标会随状态翻转，读屏也能正确播报
+          「折叠/展开」——不自绘箭头、不维护 open 状态，省掉一整类同步 bug。 */}
+      <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 14, color: T.label, userSelect: 'none' }}>
+        {title}
+        {hint ? <span style={{ color: T.sub, fontSize: 12, fontWeight: 400, marginLeft: 8 }}>{hint}</span> : null}
+      </summary>
+      <div style={{ marginTop: 6 }}>{kids}</div>
+    </details>
   )
 }
 
@@ -280,7 +328,11 @@ function HealthReport({ data }) {
       title: '重排',
       live: data.reranker.enabled ? data.reranker.live : null,
       cfg: `${data.reranker.enabled ? '启用' : '未启用'} · ${data.reranker.model} → ${data.reranker.endpoint}`,
-      okText: `打分 ${JSON.stringify(data.reranker.live?.scores ?? [])} · ${data.reranker.live?.ms ?? '?'}ms`,
+      // v0.16.2：改成「相关 vs 不相关」对照读数。原先只显示两个分数，而探针当时选的两个文档
+      // 都不相关（真值 1e-5，被截成 0），看上去像坏了——实为仪器骗人。现在直接给两组对照值，
+      // "有没有区分度"一眼可判；有 warning 时按错误色显示（见下方 errText 渲染）。
+      okText: `相关文档 ${data.reranker.live?.relDoc0 ?? '?'} · 不相关文档 ${data.reranker.live?.irrDoc1 ?? '?'} · ${data.reranker.live?.ms ?? '?'}ms`,
+      errText: data.reranker.live?.warning,
       tail: `密钥引用 ${data.reranker.keyRef}：${data.reranker.keyConfigured ? '已配置' : '未配置'}`,
     },
     {
@@ -305,6 +357,7 @@ function HealthReport({ data }) {
               <span style={{ color: T.sub, fontSize: 12, marginLeft: 8 }}>{r.cfg}</span>
             </div>
             {r.live?.ok ? <div style={{ fontSize: 12, color: T.sub, marginTop: 2 }}>{r.okText}</div> : null}
+            {r.live?.ok && r.errText ? <div style={{ fontSize: 12, color: T.err, marginTop: 2 }}>{r.errText}</div> : null}
             {r.live && !r.live.ok ? <div style={{ fontSize: 12, color: T.err, marginTop: 2 }}>{r.live.error}</div> : null}
             {r.tail ? <div style={{ fontSize: 12, color: T.sub, marginTop: 2 }}>{r.tail}</div> : null}
           </div>
@@ -481,11 +534,15 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
 
   const dirty = Object.keys(drafts).length > 0
   // 数值字段（顶层数值声明 + 子对象中 NUMERIC_SUB 声明项）填了非数字 → 禁止保存；
-  // 顶层文本字段（dbFile/scope/injectPace 等，TEXT_TOP 声明）不参与数值校验
+  // 顶层文本字段（dbFile/scope/injectPace 等，TEXT_TOP 声明）不参与数值校验。
+  // 注意：pinnedLimit/pinnedMaxTokens 是**数值**字段，不进 TEXT_TOP——顶层无点的键默认按数值校验，
+  // 正是我们要的行为。
   const TEXT_TOP = new Set(['dbFile', 'scope', 'injectPace'])
   const invalid = Object.entries(drafts).some(([k, v]) => {
     if (v === '' || TEXT_TOP.has(k)) return false
     const field = k.includes('.') ? k.split('.')[1] : k
+    // v0.16.2：子对象里的字符串枚举/数组（TEXT_SUB）同样不参与数值校验
+    if (TEXT_SUB.has(field)) return false
     const isNumeric = !k.includes('.') || NUMERIC_SUB.has(field)
     return isNumeric && Number.isNaN(Number(v))
   })
@@ -512,18 +569,28 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       }
       // 注入节奏档位（v0.11.2）：字符串枚举，live 生效
       if (drafts['injectPace'] !== undefined) await scope.set('injectPace', drafts['injectPace'])
+      // 常驻预算（v0.16.2 补界面入口）：顶层数值字段，走与 NUMBER_FIELDS 相同的空值语义
+      for (const field of ['pinnedLimit', 'pinnedMaxTokens']) {
+        const raw = drafts[field]
+        if (raw === undefined) continue
+        if (raw === '') await scope.unset(field)
+        else await scope.set(field, Number(raw))
+      }
       // features 整体
-      const featKeys = FEATURE_FIELDS.map(([f]) => f)
+      const featKeys = FEATURE_FIELDS.map(([f]) => f).concat(['preheatRoute', 'webFence'])
       if (featKeys.some((f) => drafts[`features.${f}`] !== undefined)) {
         const next = { ...features }
         for (const [f] of FEATURE_FIELDS) {
           const v = drafts[`features.${f}`]
           if (v !== undefined) next[f] = v
         }
+        // 两个字符串枚举（v0.16.2 补界面入口）：不走 FEATURE_FIELDS 的布尔分支
+        if (drafts['features.preheatRoute'] !== undefined) next.preheatRoute = String(drafts['features.preheatRoute'])
+        if (drafts['features.webFence'] !== undefined) next.webFence = String(drafts['features.webFence'])
         await scope.set('features', next)
       }
       {/* refiner 整体 */}
-      const refKeys = REFINER_FIELDS.map(([f]) => f)
+      const refKeys = REFINER_FIELDS.map(([f]) => f).concat(['dialogChars', 'knownChars', 'knownTopN', 'messagesProviders'])
       if (refKeys.some((f) => drafts[`refiner.${f}`] !== undefined)) {
         const next = { ...refiner }
         for (const [f] of REFINER_FIELDS) {
@@ -531,6 +598,16 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           if (v !== undefined) {
             next[f] = f === 'enabled' ? v : NUMERIC_SUB.has(f) ? Number(v) : String(v)
           }
+        }
+        // 三个数值 + 一个字符串数组（v0.16.2 补界面入口）
+        for (const f of ['dialogChars', 'knownChars', 'knownTopN']) {
+          const v = drafts[`refiner.${f}`]
+          if (v !== undefined) next[f] = Number(v)
+        }
+        const mp = drafts['refiner.messagesProviders']
+        if (mp !== undefined) {
+          // 逗号分隔文本 → 字符串数组；空串 = 清空名单（回到 pi-ai 姿势，这是有意义的取值）
+          next.messagesProviders = String(mp).split(',').map((s) => s.trim()).filter(Boolean)
         }
         await scope.set('refiner', next)
       }
@@ -669,10 +746,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
     )
   }
 
-  // 分区：原生设置页是「标题 + 分隔线」，不是卡片。marginTop/paddingTop 造出节奏，
-  // border-top 与宿主的分隔线同色同粗——不再自铺背景层（v0.11.1）。
-  const blockStyle = { marginTop: 22, paddingTop: 16, borderTop: `1px solid ${T.line}` }
-  const blockTitle = { margin: '0 0 4px', fontWeight: 600, fontSize: 14, color: T.label }
+  // 分区样式已提到模块级（v0.16.2），此处不再重复定义。
   const ghostBtn = {
     padding: '0 16px', height: 32, borderRadius: 8, border: `1px solid ${T.line}`,
     background: 'transparent', color: T.label,
@@ -731,7 +805,8 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         </Field>
       </div>
 
-      <div style={blockStyle}>
+      <Section title="什么时候提醒我" hint="注入节奏与预算">
+        <div style={blockStyle}>
         <div style={blockTitle}>检索与注入</div>
         <p style={{ color: T.sub, fontSize: 12, margin: '0 0 10px 0' }}>
           v0.10 注入加权：画像 ×3 · principle（方法/原则）×1.5 优先 · event（事件/产出）×0.7 降权（强相关才注入）；
@@ -773,43 +848,52 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
             />
           </Field>
         ))}
-        {/* 写入侧决策门（v0.16.0）：只用来**省掉不必要的 LLM 提取**；检索路径上不做任何决策判断。 */}
-        <p style={{ color: T.sub, fontSize: 12, margin: '12px 0 8px 0' }}>
-          写入侧决策门（v0.16.0）：轮次结束时问一次本机决策模型「这段对话值得记吗」，只有它高把握说
-          "不值得"才省掉这次 LLM 提取（改落一条规则快照，记录不丢）。服务没起 / 超时 / 没把握 / 本轮被取消
-          都照常提取；服务未启动时自动冷却 5 分钟，不再逐轮去撞它。<br />
-          <b>检索路径上没有决策门</b>：用户消息来了就直接查库，不问"要不要查"。
-        </p>
-        {DECISION_FIELDS.map(([field, label, hint]) => (
-          <Field key={field} label={label} hint={hint}>
-            <input
-              style={inputStyle}
-              type={field === 'endpoint' ? 'text' : 'number'}
-              value={drafts[`decision.${field}`] ?? decision[field] ?? ''}
-              disabled={!writable}
-              onChange={(e) =>
-                field === 'endpoint'
-                  ? setText('decision', field, e.target.value)
-                  : setNum(`decision.${field}`, e.target.value)
-              }
+      </div>
+      </Section>
+
+      <Section title="记什么" hint="写入侧开关与决策门">
+        <div style={blockStyle}>
+          {FEATURE_FIELDS.map(([field, label, hint]) => (
+            <CheckboxRow
+              key={field}
+              label={label}
+              hint={hint}
+              checked={bool('features', field, features)}
+              onChange={(e) => setBool('features', field, e.target.checked)}
             />
-          </Field>
-        ))}
-      </div>
+          ))}
+        </div>
 
-      <div style={blockStyle}>
-        <div style={blockTitle}>功能开关</div>
-        {FEATURE_FIELDS.map(([field, label, hint]) => (
-          <CheckboxRow
-            key={field}
-            label={label}
-            hint={hint}
-            checked={bool('features', field, features)}
-            onChange={(e) => setBool('features', field, e.target.checked)}
-          />
-        ))}
-      </div>
+        {/* 写入侧决策门（v0.16.0）：只用来**省掉不必要的 LLM 提取**；检索路径上不做任何决策判断。
+            它属于写入侧，所以放在「记什么」而不是「什么时候提醒我」——v0.16.2 整理时归位。 */}
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.line}` }}>
+          <div style={{ fontWeight: 500, fontSize: 13, color: T.label, marginBottom: 4 }}>写入侧决策门</div>
+          <p style={{ color: T.sub, fontSize: 12, margin: '0 0 8px 0' }}>
+            轮次结束时问一次本机决策模型「这段对话值得记吗」，只有它高把握说"不值得"才省掉这次 LLM 提取
+            （改落一条规则快照，记录不丢）。服务没起 / 超时 / 没把握 / 本轮被取消都照常提取。
+            <br /><b>注意</b>：它需要本机决策服务（默认 127.0.0.1:8090）常驻；服务不开时请保持上面的
+            「写入前预筛」关闭，否则每轮都会白撞一次失败请求。<br />
+            <b>检索路径上没有决策门</b>：用户消息来了就直接查库，不问"要不要查"。
+          </p>
+          {DECISION_FIELDS.map(([field, label, hint]) => (
+            <Field key={field} label={label} hint={hint}>
+              <input
+                style={inputStyle}
+                type={field === 'endpoint' ? 'text' : 'number'}
+                value={drafts[`decision.${field}`] ?? decision[field] ?? ''}
+                disabled={!writable}
+                onChange={(e) =>
+                  field === 'endpoint'
+                    ? setText('decision', field, e.target.value)
+                    : setNum(`decision.${field}`, e.target.value)
+                }
+              />
+            </Field>
+          ))}
+        </div>
+      </Section>
 
+      <Section title="用哪个模型" hint="提取 / 嵌入 / 重排">
       <div style={blockStyle}>
         <div style={blockTitle}>独立提取模型（refiner）</div>
         <CheckboxRow
@@ -1053,7 +1137,9 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           hint="与嵌入可共用同一密钥；写入凭据文件，不进设置/记忆库、界面不回显。"
         />
       </div>
+      </Section>
 
+      <Section title="图谱手感" hint="力导向参数（重开面板生效）">
       <div style={blockStyle}>
         <div style={blockTitle}>记忆图谱（力导向手感）</div>
         <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
@@ -1094,7 +1180,9 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           </Field>
         ))}
       </div>
+      </Section>
 
+      <Section title="自动整理" hint="管家巡检与归档">
       <div style={blockStyle}>
         <div style={blockTitle}>记忆管家（自动巡检）</div>
         <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
@@ -1171,7 +1259,9 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           </Field>
         ))}
       </div>
+      </Section>
 
+      <Section title="外观与排查" hint="运行日志 / 高级通道">
       <div style={blockStyle}>
         <div style={blockTitle}>运行日志（v0.9.5）</div>
         <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
@@ -1195,6 +1285,122 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           </Field>
         ))}
       </div>
+
+      {/* 高级通道（v0.16.2）：这几个字段原先在界面上**没有入口**，只能手改 settings.yaml。
+          它们不常动、但改错了影响面不小（预热通道、Web 围栏），所以收在「外观与排查」里，
+          并且逐条写清"改了会怎样"。 */}
+      <div style={{ ...blockStyle, marginTop: 18 }}>
+        <div style={blockTitle}>高级通道</div>
+        <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
+          平时不用动。改错了会影响记忆能否预热、以及图谱/日志端点能否访问。
+        </p>
+        <Field label="会话预热通道（preheatRoute）" hint="auto（默认）=有系统提示服务就走系统提示段落，否则回落消息注入 | prompt-section=强制系统提示段落（老内核上会静默不预热）| message=强制消息注入（首步可能看不到）">
+          <select
+            style={inputStyle}
+            value={drafts['features.preheatRoute'] ?? features.preheatRoute ?? 'auto'}
+            disabled={!writable}
+            onChange={(e) => setText('features', 'preheatRoute', e.target.value)}
+          >
+            <option value="auto">auto（默认，自动选可用通道）</option>
+            <option value="prompt-section">prompt-section（强制系统提示段落）</option>
+            <option value="message">message（强制消息注入）</option>
+          </select>
+        </Field>
+        <Field label="Web 端点信任围栏（webFence）" hint="loopback（默认）=只允许本机回环与同源请求访问 /dsh-memory/{graph,logs,health} | off=不挡——**只有在手机/局域网/反向代理访问本 GUI 时才该关**，关掉后任何能触达端口的人都能读图谱与日志（health?llm=1 还会真发模型请求）">
+          <select
+            style={inputStyle}
+            value={drafts['features.webFence'] ?? features.webFence ?? 'loopback'}
+            disabled={!writable}
+            onChange={(e) => setText('features', 'webFence', e.target.value)}
+          >
+            <option value="loopback">loopback（默认，仅本机）</option>
+            <option value="off">off（不挡，仅局域网/手机访问时用）</option>
+          </select>
+        </Field>
+      </div>
+      </Section>
+
+      <Section title="专家参数" hint="常驻预算 / 提取输入 / 协议名单">
+      <div style={blockStyle}>
+        <div style={blockTitle}>常驻记忆预算（pinned）</div>
+        <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
+          常驻 = 被钉选的记忆**恒定注入**，不走检索、不看得分、每步都随注入块抵达（用于珍贵教训与铁律）。
+          它有自己的预算，不与被检索到的记忆抢额度。
+        </p>
+        <Field label="常驻条数上限（pinnedLimit）" hint="每次注入最多带几条常驻记忆（1~50，默认 8）">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['pinnedLimit'] ?? String(value.pinnedLimit ?? 8)}
+            disabled={!writable}
+            onChange={(e) => setDrafts((d) => ({ ...d, pinnedLimit: e.target.value }))}
+          />
+        </Field>
+        <Field label="常驻块 token 预算（pinnedMaxTokens）" hint="常驻内容单独占用的 token 预算（100~4000，默认 600）">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['pinnedMaxTokens'] ?? String(value.pinnedMaxTokens ?? 600)}
+            disabled={!writable}
+            onChange={(e) => setDrafts((d) => ({ ...d, pinnedMaxTokens: e.target.value }))}
+          />
+        </Field>
+      </div>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>提取输入瘦身</div>
+        <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
+          提取是**压缩**任务：塞进去的原文越长，模型的通读成本与思考量一起涨（实测思考量可达输入的 1~3.4 倍）。
+          调小更省更快，调大更全但更慢。
+        </p>
+        <Field label="单侧对话截断字数（dialogChars）" hint="用户/助手各截多少字（500~20000，默认 4000）。值得记的信息几乎总在最近几千字里">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['refiner.dialogChars'] ?? String(refiner.dialogChars ?? 4000)}
+            disabled={!writable}
+            onChange={(e) => setText('refiner', 'dialogChars', e.target.value)}
+          />
+        </Field>
+        <Field label="已有记忆每条截断（knownChars）" hint="交给模型判断「是否推翻旧记」时，每条旧记忆只留骨架（40~500，默认 120）">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['refiner.knownChars'] ?? String(refiner.knownChars ?? 120)}
+            disabled={!writable}
+            onChange={(e) => setText('refiner', 'knownChars', e.target.value)}
+          />
+        </Field>
+        <Field label="已有记忆最多给几条（knownTopN）" hint="防检索结果变多后把输入撑爆（1~20，默认 5）">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['refiner.knownTopN'] ?? String(refiner.knownTopN ?? 5)}
+            disabled={!writable}
+            onChange={(e) => setText('refiner', 'knownTopN', e.target.value)}
+          />
+        </Field>
+      </div>
+
+      <div style={blockStyle}>
+        <div style={blockTitle}>协议名单（messagesProviders）</div>
+        <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
+          决定「关思考」用哪种写法。pi-ai 路由（opencode-go 等）**不传**该字段才关思考；
+          官方 Messages 路由**必须显式传 off** 才关（不传会回落到高思考）。这里填**路由名片段**（子串匹配，逗号分隔）。
+          <br />默认 <code>deepseek-official</code>。若你的官方路由改了名字（如 deepseek-api），把它加进来；
+          填错会让官方路由重新打开高思考（表现为提取变慢、思考量暴涨），不会报错。
+        </p>
+        <Field label="按 Messages 协议处理的路由名片段" hint="逗号分隔；留空 = 一律按 pi-ai 姿势处理（v0.16.0 的旧行为）">
+          <input
+            style={inputStyle}
+            type="text"
+            value={drafts['refiner.messagesProviders'] ?? (Array.isArray(refiner.messagesProviders) ? refiner.messagesProviders.join(', ') : 'deepseek-official')}
+            disabled={!writable}
+            onChange={(e) => setText('refiner', 'messagesProviders', e.target.value)}
+          />
+        </Field>
+      </div>
+      </Section>
 
       {/* v0.14.1：本面板有十几个分组，保存/重置原先挂在最底部 —— 只看到「基础配置」时
           会以为"这里没有保存按钮"。改成吸底工具条：滚到哪都在视野内；

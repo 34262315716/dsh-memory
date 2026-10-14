@@ -167,7 +167,10 @@ console.log('== 5. 太短的轮次连问都不问（先过价值门，省掉这�
 console.log('== 6. schema：新开关与写入门槛默认值 ==')
 {
   const c = cfgOf({})
-  check('6a features.writeGate 默认 true', c.features.writeGate === true)
+  // v0.16.1：默认由 true 改成 false——决策服务（8090）实际一般不开，开着只会每轮白撞一次
+  // （上线至今 496 次调用 0 成功）。开关本身仍在，需要时打开即可。
+  check('6a features.writeGate 默认 false（决策服务一般不开，开着只会白撞）', c.features.writeGate === false)
+  check('6a2 features.writeGate 仍可显式打开（开关没被删掉）', cfgOf({ features: { writeGate: true } }).features.writeGate === true)
   check('6b decision.writeMinConfidence 默认 0.9（写入侧唯一的门槛）', c.decision.writeMinConfidence === 0.9)
   check('6c 注入侧门槛已移除（检索路径不接决策模型）', c.decision.minConfidence === undefined)
   check('6d writeMinConfidence 也可配', cfgOf({ decision: { writeMinConfidence: 0.95 } }).decision.writeMinConfidence === 0.95)

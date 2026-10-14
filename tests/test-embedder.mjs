@@ -99,6 +99,35 @@ check('rerank 部分缓存命中：返回全部 doc（不丢缓存项）', c3.le
 const c4 = await rrCached.rerank('q1', ['docC'])            // 新 doc 单条
 check('rerank 新 doc 请求', c4.length === 1 && c4[0].score === 0.5)
 
+// 6b. bypassCache（v0.16.2）：健康探针专用——必须每次真打上游，且不污染检索缓存
+{
+  // 场景（2026-10-14 实测抓到）：探针的 query/文档写死，走缓存时第二次起是 0ms 命中，
+  // **等于没请求上游**——上游挂了探针照样绿。仪器要测的是被检验的东西，不是自己的缓存。
+  let n = 0
+  const countingFetch = async (url, opts) => {
+    n++
+    const body = JSON.parse(opts.body)
+    return { ok: true, json: async () => ({ results: body.documents.map((_, i) => ({ index: i, relevance_score: 0.9 - i * 0.8 })) }), text: async () => '' }
+  }
+  const rr = new RemoteReranker({ baseUrl: 'https://mock', apiKey: 'x', model: 'r', fetchImpl: countingFetch })
+
+  await rr.rerank('probe', ['rel', 'irr'], { bypassCache: true })
+  await rr.rerank('probe', ['rel', 'irr'], { bypassCache: true })
+  check('bypassCache：每次调用都真打上游（不读缓存）', n === 2)
+
+  // 探针跑完不应留下缓存条目：紧接着的普通调用仍应发请求
+  await rr.rerank('probe', ['rel', 'irr'])
+  check('bypassCache：也不写缓存（探针不污染检索 LRU）', n === 3)
+
+  // 反向守护：第二次普通调用必须命中缓存（证明缓存机制本身没被改坏）
+  await rr.rerank('probe', ['rel', 'irr'])
+  check('普通路径的缓存仍然有效（第二次零请求）', n === 3)
+
+  const out = await rr.rerank('probe', ['rel', 'irr'], { bypassCache: true })
+  // 用容差比较：mock 里算的是 0.9 - 1*0.8，浮点下不严格等于 0.1
+  check('bypassCache 仍按 docs 顺序返回全部结果', out.length === 2 && Math.abs(out[0].score - 0.9) < 1e-9 && Math.abs(out[1].score - 0.1) < 1e-9)
+}
+
 // 7. store 层 rerank 集成：RRF 融合后精排（mock reranker 反转顺序）
 class MockReranker {
   constructor(scores) { this.name = 'mock'; this.calls = 0; this.scores = scores ?? [] }
