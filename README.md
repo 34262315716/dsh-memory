@@ -74,9 +74,9 @@ DSH 运行时 ──session/event──▶ 写入侧 ──沉淀/去重──�
 
 📄 交互式架构图：**[`docs/architecture.html`](docs/architecture.html)**（浏览器打开，或 DSH 右侧预览面板直接渲染）
 
-📚 详细设计：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md) · 路线图（v0.9 系列执行计划）：[`docs/ROADMAP.md`](docs/ROADMAP.md)
+📚 架构文档（**v0.16.2，按主题分 11 章**）：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（总入口）→ [`docs/architecture/`](docs/architecture/README.md)（模块构造 / 数据模型 / 写入 / 检索 / 注入 / 图谱 / 遗忘与管家 / 配置与双内核 / 集成与工具面 / 工程约定 / 已知限制）· 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md) · 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-### 模块结构（v0.9.8：增量构建；v0.9.7 解耦重构后）
+### 模块结构（v0.16.2）
 
 ```
 lib/index.js           装配壳：settings/init/Web API/管线/工具/ctx.memory（253 行）
@@ -269,9 +269,9 @@ memory:
 node tests/test.mjs         # 阶段一回归（16 项）
 node tests/test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
 node tests/test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
-node tests/test-embedder.mjs # 嵌入/重排 seam 单测（24 项：rule/remote/缓存/降级链/rerank 融合与缓存/向量独有命中/真实 API 验「当前配置的模型」）
+node tests/test-embedder.mjs # 嵌入/重排 seam 单测（29 项：rule/remote/缓存/降级链/rerank 融合与缓存/**bypassCache 让探针绕缓存真打上游**/向量独有命中/真实 API 验「当前配置的模型」）
 node tests/test-health.mjs  # 连通性自检专项（26 项：探针真发请求/402 原文透传/降级态显形/未启用不假检/不抛错/端点日志行字段名对齐）
-node tests/test-refiner-thinking.mjs # 提取器专项（50 项：不设 token 上限/思考流收集/时间预算掐断+断点续跑/空输出救回/不接话即停/续跑上限/跑题重试/多条目与旧格式/items 空不写库/价值门/关键词泛词过滤）
+node tests/test-refiner-thinking.mjs # 提取器专项（84 项：不设 token 上限/思考流收集/时间预算掐断+断点续跑/空输出救回/不接话即停/续跑上限/跑题重试/多条目与旧格式/items 空不写库/价值门/关键词泛词过滤/**按 provider 分派的关思考姿势（pi-ai 不传字段 vs 官方 Messages 显式传 off）**）
 node tests/test-housekeeping.mjs # 管家/存储专项（30 项：去重/老化/meta/触发/touch/迁移幂等/多 scope/日志）
 node tests/test-events.mjs    # 事件分类专项（21 项：时间线扫描/聚合切分/幂等/级联/gap 敏感/before 方向修正/主题过滤/空库）
 node tests/test-tool-add.mjs  # 工具写入专项（20 项：memory_add 必走图谱连边/关图与 ep 不连/abstract+theme 透传/2-gram 碎片过滤/content 归一化/写后可检索）
@@ -289,7 +289,8 @@ node tests/test-semantic-links.mjs  # 语义连边集成专项（11 项：真实
 node tests/test-graph-geometry.mjs # 主题区域几何 + 布局缓存 + 布局策略专项（66 项：凸包贴合/外扩精度/最小外接圆最优性与确定性/就地聚簇/密度核心/平移跟随；纯函数，无需副本环境）
 node tests/test-graph-field.mjs # 图谱力模型 + 种子装箱专项（56 项：邻域场零点与单调性/塌陷护栏（引力累加 vs 斥力封顶）/标度不变/各向同性/限速/种子确定性与分量团聚/同主题两层层内紧外松/600 点真实尺度零重叠；纯函数）
 node tests/test-inject-pipeline.mjs # 注入管线专项（138 项：用户消息触发必检/同文本不重复检索/两条触发源对账/注入侧不接决策模型（源码级守卫）/decision 合并注入/步距必检/三档节奏（激进 4·平稳 12·懒惰 30）/自定义档/档位表与 UI 同源/去抖/兜底/守卫/reject）
-node tests/test-write-gate.mjs # 写入侧决策门专项（41 项：上半场假门驱动管线——高把握"不值得"才省 LLM 且仍落 ep 快照/值得·没把握·服务不在·门抛错一律照常提取/关掉不问/太短不问；下半场真 HTTP 假服务——采信门槛与降级链/请求体形状与截断/HTTP 错·非 JSON·缺字段·超时·连不上/取消不设冷却/失败冷却）
+node tests/test-write-gate.mjs # 写入侧决策门专项（42 项：上半场假门驱动管线——高把握"不值得"才省 LLM 且仍落 ep 快照/值得·没把握·服务不在·门抛错一律照常提取/关掉不问/太短不问；下半场真 HTTP 假服务——采信门槛与降级链/请求体形状与截断/HTTP 错·非 JSON·缺字段·超时·连不上/取消不设冷却/失败冷却）
+node tests/test-refiner-retry.mjs # 瞬时故障重试专项（34 项：只重发网络/5xx/流畸形（event precedes message_start·TRANSPORT），配额 429 与格式错 400 不重发/指数退避封顶 8s/finish 块与抛错两条路径都覆盖/重试用尽仍抛错/transientRetries=0 可退回旧行为/**重试路径不得访问 ctx 受限属性**（同构严格假 ctx 守护））
                           # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行
 node tests/test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
 node rebuild-graph.mjs # 图谱重建运维脚本（真嵌入归一化重建 + 语义边）
