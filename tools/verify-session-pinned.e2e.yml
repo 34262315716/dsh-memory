@@ -1,0 +1,27 @@
+# 端到端验收 overlay（tools/verify-session-pinned.e2e.yml）
+#
+# 目的：起一个**真实内核**的 headless 会话，让注入管线在内核的 pre-step 事件流里真跑一遍，
+# 然后回读它写下的 inject 日志（`pinPhase` 逐条对账，见 tools/verify-session-pinned.mjs）。
+#
+# 隔离：dbFile 指向真库的**副本**（读得到真实钉选清单，写入落在副本上）；autoWrite 关掉，
+# 跑完不会触发 LLM 提取、不改库内容。__DBFILE__ 由使用方替换成实际路径。
+#
+# 用法（DSH_HOME 指向本机数据区）：
+#   <node> <dsh bin> --profile headless --patch <overlay.yml> "只回一个字：好"
+#
+# 两个实测坑：
+#   1. **必须连 workspace 一起挂**——dsh-memory 声明了 workspaceRegistry 依赖，
+#      headless profile 默认不带它，只挂 memory 会一直 pending（日志：waiting for service）。
+#   2. `name` 用**包名**在 headless profile 里解析不到（该 profile 的 node_modules 没有 dsh-memory），
+#      要用仓库里 lib/index.js 的绝对路径。
+- insert:
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+    - id: memory
+      name: 'D:/AItool/DSH-all/work-konjian/dsh-memory/lib/index.js'
+      config:
+        dbFile: __DBFILE__
+        injectPace: custom
+        stepInterval: 5
+        features:
+          autoWrite: false
