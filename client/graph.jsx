@@ -30,9 +30,10 @@ const TYPE_COLORS = {
   preference: 'hsl(291, 52%, 62%)',   // 紫（偏好=个性）
   lesson:     'hsl(1, 83%, 63%)',     // 珊瑚红（教训=警示）
   profile:    'hsl(122, 45%, 58%)',   // 翠绿（画像=用户本人）
+  aggregate:  'hsl(45, 70%, 60%)',   // 金色（折叠容器：多条记忆聚合成的占位）
 }
 const TYPE_COLOR_FALLBACK = 'hsl(200, 16%, 60%)'   // 蓝灰（legacy/未知类型）
-const TYPE_LABEL = { note: "记录", decision: "决策", preference: "偏好", lesson: "教训", profile: "画像" }
+const TYPE_LABEL = { note: "记录", decision: "决策", preference: "偏好", lesson: "教训", profile: "画像", aggregate: "聚合" }
 
 /** 节点最终色（v0.10 重写）：
  *  基色（主题色或类型色）→ strength 明度微调（次级维度，同类型节点也有层次）
@@ -62,6 +63,15 @@ function nodeColor(base, strength, createdAt, minCreatedAt, now = Date.now(), di
 
 /** 节点基色：有主题 → 主题色（色板按主题列表索引）；无主题 → 类型色。 */
 function pickColor(themes, theme, type) {
+  /**
+   * 折叠容器优先用金色（v0.17.1）。
+   *
+   * 为什么必须放在最前面：容器**大多有主题**（按主题折叠出来的），而下面那行
+   * 是"有主题就用主题色"——于是容器会被染成和它内部成员一样的颜色，
+   * 在图上完全认不出来。容器的语义是"这里折叠了一堆"，它必须一眼可辨，
+   * 所以类型优先于主题。
+   */
+  if (type === "aggregate") return TYPE_COLORS.aggregate
   if (theme) {
     const i = themes.indexOf(theme)
     if (i >= 0) return THEME_COLORS[i % THEME_COLORS.length]
@@ -224,11 +234,18 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
      *  半径随缩放漂移 → "节点不重合"无法成为布局约束（放大就重叠），观感也会忽大忽小。
      *  现在半径是布局空间常量，配合下面的碰撞规避给出硬保证：任何缩放倍率下都不重合。 */
     /**
-   * 节点半径（v0.17.0 加容器项）。
+   * 节点半径（v0.17.0 加容器项；v0.17.1 改对数压制）。
    *
-   * 合并产物的半径要**明显大于**普通节点——它代表的不止是一条记忆，而是好几条。
-   * 用 sqrt 增长（面积线性于数量）而不是线性：12 条合并的节点半径是普通节点的
-   * 约 2.7 倍（1→√12），视觉上"大而不霸屏"；线性增长会让它变成巨无霸把主题团挤散。
+   * 合并产物 / 折叠容器的半径要**大于**普通节点——它代表的不止是一条记忆。
+   *
+   * 为什么不用 sqrt（v0.17.1 看图修正）：原式 base·√(1+k) 在 k=531 时算出 452px，
+   * 画到画布上是个把整个主题团吞掉的巨无霸（实测预览图：最大的金色圆直径占画面 1/3）。
+   * 折叠容器的 childCount 可以很大（无主题那批 531 条），任何无上界的增长都会失控。
+   *
+   * 改用**对数压制**：base·(1 + log2(1+k)·0.42)。实测各档位：
+   *   k=10 → 48px、k=100 → 74px、k=531 → 94px（不是 452px）。
+   * 差别只在"明显更大"，不再有失控的尾部——531 条的容器和 10 条的容器
+   * 视觉上只差一倍，符合"它就是个占位"的语义。
    *
    * 为什么必须一起进物理：半径同时喂给碰撞检测（COLLIDE_GAP），容器变大后
    * 周围节点会自动让位——否则子点画出来会跟邻居重叠。
@@ -236,7 +253,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
   const nodeRadiusOf = (n) => {
     const base = 7 + Math.min(n?.degree ?? 0, 14) * 0.9
     const kids = Math.max(0, n?.childCount ?? 0)
-    return kids > 0 ? base * Math.sqrt(1 + kids) : base
+    return kids > 0 ? base * (1 + Math.log2(1 + kids) * 0.42) : base
   }
     // v0.15.1：REP_C 这类力常数已全部搬到 graph-force.js（唯一定义处），这里不再留一份影子常量。
     const COLLIDE_GAP = 6        // 节点之间的最小空隙（世界坐标）；力已负责间距，这里只兜底"绝不重合"
@@ -990,7 +1007,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
  * 源记忆虽然归档了（不进检索、不进图谱顶层），但它们的数据完整保留；
  * 这个面板就是那道"要看原文随时能看"的口子。没有它，用户对合并只能选择信任。
  */
-const MergeSources = memo(function MergeSources({ id, count }) {
+const MergeSources = memo(function MergeSources({ id, count, kind }) {
   const [open, setOpen] = useState(false)
   const [group, setGroup] = useState(null)
   const [err, setErr] = useState("")
@@ -1009,7 +1026,7 @@ const MergeSources = memo(function MergeSources({ id, count }) {
         onClick={load}
         style={{ fontSize: 12, padding: "4px 10px", cursor: "pointer", background: "#242424", color: "#ffd54f", border: "1px solid #3a3a3a", borderRadius: 4 }}
       >
-        {open ? "▾" : "▸"} 合并来源（{count} 条）
+        {open ? "▾" : "▸"} {kind === "aggregate" ? ("已折叠的记忆（" + count + " 条）") : ("合并来源（" + count + " 条）")}
       </button>
       {open && err ? <p style={{ fontSize: 12, color: "#e07b39", margin: "8px 0 0" }}>读取失败：{err}</p> : null}
       {open && group ? (
@@ -1066,7 +1083,7 @@ const DetailPanel = memo(function DetailPanel({ selected, data }) {
         * 默认不展开——它的价值是"让人知道这条结论有底可查"，而不是每次都读一遍原文。
         * 点开才拉取（懒加载，一次 HTTP），避免打开面板就为每条记忆拉一遍源内容。
         */}
-      {(selected.childCount ?? 0) > 0 ? <MergeSources id={selected.id} count={selected.childCount} /> : null}
+      {(selected.childCount ?? 0) > 0 ? <MergeSources id={selected.id} count={selected.childCount} kind={selected.aggregated ? "aggregate" : "merged"} /> : null}
       <h5 style={{ margin: "14px 0 6px", fontSize: 12, color: "#aaa" }}>关联记忆</h5>
       {(adj.get(selected.id) ?? []).length === 0 ? (
         <p style={{ fontSize: 12, color: "#777" }}>暂无关联</p>
