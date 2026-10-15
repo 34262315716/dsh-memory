@@ -534,10 +534,11 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
 
   const dirty = Object.keys(drafts).length > 0
   // 数值字段（顶层数值声明 + 子对象中 NUMERIC_SUB 声明项）填了非数字 → 禁止保存；
-  // 顶层文本字段（dbFile/scope/injectPace 等，TEXT_TOP 声明）不参与数值校验。
+  // 顶层文本字段（dbFile/scope/injectPace/pinnedInjection 等，TEXT_TOP 声明）不参与数值校验。
   // 注意：pinnedLimit/pinnedMaxTokens 是**数值**字段，不进 TEXT_TOP——顶层无点的键默认按数值校验，
-  // 正是我们要的行为。
-  const TEXT_TOP = new Set(['dbFile', 'scope', 'injectPace'])
+  // 正是我们要的行为；而 v0.18.0 的 pinnedInjection 是字符串枚举，必须进 TEXT_TOP，
+  // 否则它会被当数字校验、把保存按钮锁死（v0.16.2 那批 features 字段踩过同一个坑）。
+  const TEXT_TOP = new Set(['dbFile', 'scope', 'injectPace', 'pinnedInjection'])
   const invalid = Object.entries(drafts).some(([k, v]) => {
     if (v === '' || TEXT_TOP.has(k)) return false
     const field = k.includes('.') ? k.split('.')[1] : k
@@ -569,6 +570,8 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       }
       // 注入节奏档位（v0.11.2）：字符串枚举，live 生效
       if (drafts['injectPace'] !== undefined) await scope.set('injectPace', drafts['injectPace'])
+      // 常驻注入粒度（v0.18.0）：字符串枚举，live 生效
+      if (drafts['pinnedInjection'] !== undefined) await scope.set('pinnedInjection', drafts['pinnedInjection'])
       // 常驻预算（v0.16.2 补界面入口）：顶层数值字段，走与 NUMBER_FIELDS 相同的空值语义
       for (const field of ['pinnedLimit', 'pinnedMaxTokens']) {
         const raw = drafts[field]
@@ -829,6 +832,27 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
             {INJECT_PACE_OPTIONS.map(([key, label, steps, desc]) => (
               <option key={key} value={key}>{steps ? `${label}（每 ${steps} 步）` : label} — {desc}</option>
             ))}
+          </select>
+        </Field>
+        {/* 常驻注入粒度（v0.18.0，回答需求《常驻记忆改会话级注入》）：
+            session 档是默认——会话首轮注入一次，之后只在钉选清单变化时补一条增量；
+            step 档是旧行为（每步携带），留作对照排查时一键退回。 */}
+        <Field
+          label="常驻注入粒度（pinnedInjection）"
+          hint={
+            (drafts['pinnedInjection'] ?? value.pinnedInjection ?? 'session') === 'session'
+              ? '当前：会话级注入——会话首轮带一次完整常驻清单；之后只在「新钉选 / 取消钉选 / 已钉内容被改」时补一条增量，不重复发整份'
+              : '当前：每步注入（旧行为）——常驻清单随每次注入块抵达，长会话里会重复出现同一段文本'
+          }
+        >
+          <select
+            style={inputStyle}
+            value={drafts['pinnedInjection'] ?? value.pinnedInjection ?? 'session'}
+            disabled={!writable}
+            onChange={(e) => setDrafts((d) => ({ ...d, pinnedInjection: e.target.value }))}
+          >
+            <option value="session">session（默认，会话级：首轮一次 + 变化时增量）</option>
+            <option value="step">step（旧行为：每一步都随注入块抵达）</option>
           </select>
         </Field>
         {NUMBER_FIELDS.map(([field, label, hint]) => (
@@ -1324,8 +1348,9 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       <div style={blockStyle}>
         <div style={blockTitle}>常驻记忆预算（pinned）</div>
         <p style={{ margin: '0 0 4px', color: T.sub, fontSize: 12 }}>
-          常驻 = 被钉选的记忆**恒定注入**，不走检索、不看得分、每步都随注入块抵达（用于珍贵教训与铁律）。
-          它有自己的预算，不与被检索到的记忆抢额度。
+          常驻 = 被钉选的记忆**不看相关性、不看得分、不受节流**（用于珍贵教训与铁律）。
+          v0.18.0 起它的注入**时机**由上面的「常驻注入粒度」决定——默认会话级（首轮一次 + 变化时增量），
+          可切回每步注入。它有自己的预算，不与被检索到的记忆抢额度。
         </p>
         <Field label="常驻条数上限（pinnedLimit）" hint="每次注入最多带几条常驻记忆（1~50，默认 8）">
           <input

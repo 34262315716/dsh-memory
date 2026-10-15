@@ -33,6 +33,13 @@ const CFG = () => ({
   maxRecentPerAgent: 6,
   pinnedLimit: 8,
   pinnedMaxTokens: 600,
+  /**
+   * v0.18.0：既有用例（§0~§15）描述的统统是「每步注入」的旧行为——那时它是唯一行为，
+   * 用例写的时候就默认了它。新档位把默认值改成了 session，所以这里**显式退回 step**，
+   * 让老用例继续锁住旧契约（这也正是需求 §四.7「切回旧行为要能一键退回」的用法示范）。
+   * 新档位的契约见文末 §17。
+   */
+  pinnedInjection: 'step',
 })
 
 /**
@@ -484,30 +491,39 @@ console.log('== 10. 常驻通道（v0.13.0）：不依赖检索，恒定抵达 =
 console.log('== 11. 常驻装配与渲染（buildPinned / renderPinned） ==')
 {
   const mk = (i, len) => ({ id: `mem-b${i}`, type: 'lesson', content: 'x'.repeat(len), abstract: 'principle' })
+  // v0.18.0：本节的断言锁的是 **step 档**（旧行为）的渲染——故显式带上该档位。
+  // session 档的块头与增量渲染见 §17。
+  const STEP = { pinnedInjection: 'step' }
   const fakeStore = { listPinned: ({ limit }) => [mk(1, 10), mk(2, 4000), mk(3, 10)].slice(0, limit) }
-  const r = buildPinned(fakeStore, { pinnedLimit: 8, pinnedMaxTokens: 100 })
+  const r = buildPinned(fakeStore, { ...STEP, pinnedLimit: 8, pinnedMaxTokens: 100 })
   check('buildPinned 受 pinnedMaxTokens 约束（4000 字那条被挡在预算外）', r.pins.length === 1 && r.pins[0].id === 'mem-b1')
   check('buildPinned 渲染非空', r.text.includes('#mem-b1') && r.text.includes('恒定注入'))
-  const r2 = buildPinned({ listPinned: () => [] }, { pinnedLimit: 8, pinnedMaxTokens: 600 })
+  const r2 = buildPinned({ listPinned: () => [] }, { ...STEP, pinnedLimit: 8, pinnedMaxTokens: 600 })
   check('无常驻 → 空文本（不产生空块头）', r2.pins.length === 0 && r2.text === '')
-  const r3 = buildPinned({ listPinned: () => { throw new Error('boom') } }, {})
+  const r3 = buildPinned({ listPinned: () => { throw new Error('boom') } }, STEP)
   check('存储异常 → 降级为空且不抛错（常驻坏了不连累注入）', r3.pins.length === 0 && r3.text === '')
   const fakeLimit = { listPinned: ({ limit }) => [mk(1, 10), mk(2, 10), mk(3, 10)].slice(0, limit) }
-  check('pinnedLimit 生效（只取前 2 条）', buildPinned(fakeLimit, { pinnedLimit: 2, pinnedMaxTokens: 600 }).pins.length === 2)
+  check('pinnedLimit 生效（只取前 2 条）', buildPinned(fakeLimit, { ...STEP, pinnedLimit: 2, pinnedMaxTokens: 600 }).pins.length === 2)
   // v0.13.1：预算必须按「真正注入的那一行」计费（旧实现按未截断原文计费 → 只装得下 1 条）
   {
     const longPins = { listPinned: ({ limit }) => [mk(1, 4000), mk(2, 4000), mk(3, 4000)].slice(0, limit) }
-    const r4 = buildPinned(longPins, { pinnedLimit: 8, pinnedMaxTokens: 500 })
+    const r4 = buildPinned(longPins, { ...STEP, pinnedLimit: 8, pinnedMaxTokens: 500 })
     check('超长钉选按渲染后的行长计费（3 条在 500 token 预算内全装得下）', r4.pins.length === 3)
     check('超长钉选在块内被截到单条上限', r4.text.length < 1100 && r4.text.includes('#mem-b3'))
   }
-  const text = renderPinned([{ id: 'mem-1', type: 'lesson', content: '第一行\n第二行' }])
+  // v0.18.0：预算计费与档位无关——session 档的块头更长一点，不该把成员挤出预算
+  {
+    const longPins = { listPinned: ({ limit }) => [mk(1, 4000), mk(2, 4000), mk(3, 4000)].slice(0, limit) }
+    const r5 = buildPinned(longPins, { pinnedInjection: 'session', pinnedLimit: 8, pinnedMaxTokens: 500 })
+    check('session 档同样按行长计费（3 条全装得下）', r5.pins.length === 3 && r5.text.includes('会话级注入'))
+  }
+  const text = renderPinned([{ id: 'mem-1', type: 'lesson', content: '第一行\n第二行' }], { scope: 'step' })
   check('renderPinned 头含条数与「恒定注入」', text.startsWith('[记忆] 常驻要点（恒定注入 · 钉选 1 条'))
   check('renderPinned 多行内容压成单行', text.includes('第一行 第二行') && !text.includes('\n第二行'))
   check('renderPinned 带类型小标（lesson → 教训）', text.includes('【教训】#mem-1'))
   check('renderPinned 空数组 → 空串', renderPinned([]) === '' && renderPinned(undefined) === '')
   check('renderPinned 确定性：同输入逐字相同（去抖前提）',
-    renderPinned([{ id: 'a', type: 'note', content: 'z' }]) === renderPinned([{ id: 'a', type: 'note', content: 'z' }]))
+    renderPinned([{ id: 'a', type: 'note', content: 'z' }], { scope: 'step' }) === renderPinned([{ id: 'a', type: 'note', content: 'z' }], { scope: 'step' }))
 }
 
 console.log('== 12. 存储层：pinned 列 / 常驻清单 / 确定性顺序 ==')
@@ -677,7 +693,9 @@ console.log('== 16. 注入侧不接决策模型（2026-10-06 主人判定）：�
   const injectSrc = readFileSync(new URL('../lib/pipelines/inject.js', import.meta.url), 'utf8')
   check('16a 注入管线没有决策门调用（ask / askWorth）', !/askWorth\(|\.ask\(/.test(injectSrc))
   check('16b 注入管线没有跳过检索的分支（skipSearch）', !/skipSearch/.test(injectSrc))
-  check('16c 检索仍由 queryText 直接触发', /const hits = queryText\s*\n\s*\? await store\.search/.test(injectSrc))
+  // v0.18.0：检索的触发条件多了 searchNow（常驻差量那一步不发检索，见 §17c），
+  // 所以这里断言的是「检索仍由 queryText 直接作为检索输入」，而不是它的前置条件长什么样。
+  check('16c 检索仍由 queryText 直接触发', /const hits = searchNow && queryText\s*\n\s*\? await store\.search\(queryText/.test(injectSrc))
   check('16d 注入管线源码里不再出现 decisionGate 字样', !/decisionGate/.test(injectSrc))
 
   // schema：注入侧的开关与门槛都已移除，写入侧的仍在
@@ -686,6 +704,261 @@ console.log('== 16. 注入侧不接决策模型（2026-10-06 主人判定）：�
   check('16f decision 里不再有注入侧 minConfidence', c.decision.minConfidence === undefined)
   // v0.16.1：writeGate 默认值由 true 改成 false（决策服务一般不开），但开关与门槛都还在
   check('16g 写入侧的开关与门槛还在（不受影响）', c.features.writeGate === false && c.decision.writeMinConfidence === 0.9)
+}
+
+console.log('== 17. 会话级注入（v0.18.0）：首轮一次 + 变化时增量 ==')
+{
+  // 需求《常驻记忆改会话级注入》的验收标准逐条对应在本节：
+  //   ① 首轮整份 ② 后续不重复 ③ pin 新增增量 ④ unpin 移除增量 ⑤ 内容修改增量 ⑦ 切回旧档每步注入
+  //   ⑥ 检索行为不受影响 —— 由 §15/§16 的既有断言继续把守，这里只补一条"常驻不再挤检索"的现场。
+  const PINS = [
+    { id: 'mem-p1', type: 'lesson', content: '教训甲：先搜再动。', abstract: 'principle' },
+    { id: 'mem-p2', type: 'decision', content: '决策乙：密钥不进日志。', abstract: 'principle' },
+  ]
+  /** session 档（默认）+ 关掉用户消息触发，好观察步距与常驻各自的作用。 */
+  const CFG_SESSION = (over = {}) => ({
+    ...CFG(),
+    ...over,
+    pinnedInjection: 'session',
+    injectPace: 'custom',
+    stepInterval: over.stepInterval ?? 5,
+    features: { preStepInject: true, userMessageTrigger: false, ...(over.features ?? {}) },
+  })
+  const fb = async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] })
+  const textOf = (d) => String(d?.messages?.at(-1)?.content?.[0]?.text ?? '')
+  const memBlocks = (d) => (d?.messages ?? []).filter((m) => m?.source?.kind === 'plugin:dsh-memory')
+
+  // 17a（验收 1 + 2）：首轮整份、后续不重复
+  {
+    const { call, logs } = setup({ hits: [], pins: PINS, cfg: CFG_SESSION })
+    const d1 = await call('第一句话', fb)
+    check('17a 首轮注入常驻整份', memBlocks(d1).length === 1 && textOf(d1).includes('#mem-p1') && textOf(d1).includes('#mem-p2'))
+    check('17a 首轮块头是 session 档措辞', textOf(d1).includes('会话级注入') && !textOf(d1).includes('恒定注入'))
+    check('17a 日志标 phase=initial', logs.at(-1)?.pinPhase === 'initial')
+    const d2 = await call('第二句话', fb)
+    check('17a 第二轮无重复常驻块（步距内整步跳过）', memBlocks(d2).length === 0)
+    // 走到步距（5 步）→ 完整检索路径重跑，常驻仍**不重复**（清单没变）
+    await call('中间甲', fb); await call('中间乙', fb); await call('中间丙', fb)
+    const d6 = await call('第六句话', fb)
+    check('17a 步距到、清单未变 → 这一步没有常驻整份', memBlocks(d6).length === 0)
+    // 这一步检索零命中且常驻 unchanged → 块为空、整步早退，连注入日志都不产生。
+    // 于是"首轮那一条 initial 之后没有再写任何 inject 日志"本身就是 unchanged 的证据。
+    check('17a 全程只发生过首轮那一次注入（没有重复）',
+      logs.filter((l) => l.ev === 'inject').length === 1 && logs.at(-1)?.pinPhase === 'initial')
+    // 同上这条容易误读成"检索也停了"，所以补一个检索有命中的场面：
+    // 步距到 → 检索块照常注入，但块里**只有**检索段，且日志标 unchanged。
+    let n = 0
+    const s2 = setup({
+      pins: PINS, cfg: CFG_SESSION,
+      hits: () => [{ id: `mem-r${++n}`, content: `检索记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+    })
+    await s2.call('开头', fb)
+    await s2.call('二', fb); await s2.call('三', fb); await s2.call('四', fb); await s2.call('五', fb)
+    const dp = await s2.call('六', fb)
+    check('17a 清单未变时检索块照常注入、块内无常驻段',
+      textOf(dp).includes('与当前工作相关的既有记录') && !textOf(dp).includes('#mem-p1'))
+    check('17a 该步日志 phase=unchanged（常驻这次什么都没发）', s2.logs.at(-1)?.pinPhase === 'unchanged')
+  }
+
+  // 17b（验收 3/4/5）：pin / 改内容 / unpin → 下一轮增量
+  {
+    let list = [PINS[0]]
+    const { call, logs } = setup({ hits: [], pins: () => list, cfg: CFG_SESSION })
+    const d1 = await call('开场', fb)
+    check('17b 开场只带 1 条', textOf(d1).includes('#mem-p1') && !textOf(d1).includes('#mem-p2'))
+    // ① 新增钉选 → 下一轮增量（且不被步距拦下）
+    list = [PINS[0], PINS[1]]
+    const d2 = await call('随手一句', fb)
+    const t2 = textOf(d2)
+    check('17b 新钉选 → 下一轮出现增量块（步距拦不住）', memBlocks(d2).length === 1 && t2.includes('常驻要点变更'))
+    check('17b 增量块只报新增那条（不重发整份）', t2.includes('➕ 新增') && t2.includes('#mem-p2') && !t2.includes('#mem-p1'))
+    check('17b 日志标 phase=delta 并记下变化 id',
+      logs.at(-1)?.pinPhase === 'delta' && logs.at(-1)?.pinDelta?.added?.join(',') === 'mem-p2')
+    // ② 内容被修改 → 下一轮增量（更新）
+    list = [PINS[0], { ...PINS[1], content: '决策乙（修订）：密钥不进日志与记忆。' }]
+    const d3 = await call('再一句', fb)
+    const t3 = textOf(d3)
+    check('17b 已钉内容被改 → 下一轮出现更新增量', t3.includes('✏️ 更新') && t3.includes('密钥不进日志与记忆'))
+    check('17b 更新日志记下 updated id', logs.at(-1)?.pinDelta?.updated?.join(',') === 'mem-p2')
+    // ③ 取消钉选 → 下一轮增量（移除）
+    list = [PINS[0]]
+    const d4 = await call('又一句', fb)
+    const t4 = textOf(d4)
+    check('17b 取消钉选 → 下一轮出现移除提示', t4.includes('➖ 移除') && t4.includes('#mem-p2'))
+    check('17b 移除日志记下 removed id', logs.at(-1)?.pinDelta?.removed?.join(',') === 'mem-p2')
+    // ④ 稳定态：清单没再动 → 不再发增量（增量本身也不能刷屏）
+    const d5 = await call('最后一句', fb)
+    check('17b 清单稳定后不再发增量', memBlocks(d5).length === 0)
+  }
+
+  // 17c：增量那一步不做检索（不把节拍提前、不捞窗口外的旧命中）
+  {
+    let list = [PINS[0]]
+    let searches = 0
+    const { call, logs } = setup({
+      pins: () => list,
+      hits: () => { searches++; return [{ id: `mem-h${searches}`, content: `命中${searches}`, score: 0.5, layer: 'sm', updated_at: Date.now() }] },
+      cfg: CFG_SESSION,
+    })
+    await call('开场', fb)
+    const afterFirst = searches
+    list = [PINS[0], PINS[1]]
+    const d2 = await call('随手一句', fb)
+    check('17c 增量步仍注入', memBlocks(d2).length === 1)
+    check('17c 增量步不触发检索', searches === afterFirst)
+    check('17c 触发源标为 pinned-delta', logs.at(-1)?.trigger === 'pinned-delta')
+  }
+
+  // 17d（需求 §六.3 判定方式）：记账按 agent id 隔离，各会话各自首轮
+  {
+    const { call } = setup({ hits: [], pins: PINS, cfg: CFG_SESSION })
+    const agentA = { id: 'sess-A', session: {} }
+    const agentB = { id: 'sess-B', session: {} }
+    const dA = await call('A 开场', fb, { agent: agentA })
+    const dB = await call('B 开场', fb, { agent: agentB })
+    check('17d 两个会话各自拿到整份（互不消耗）', textOf(dA).includes('#mem-p1') && textOf(dB).includes('#mem-p1'))
+    const dA2 = await call('A 第二句', fb, { agent: agentA })
+    check('17d A 的第二句不再重复', memBlocks(dA2).length === 0)
+    // 记账随 agent 生命周期回收（源码级守卫：进程内 Map 不该随会话无限增长）
+    check('17d 记账随 agent 销毁回收（挂了 agent/disposed）',
+      /ctx\.on\('agent\/disposed'[\s\S]{0,200}pinSession\.delete/.test(readFileSync(new URL('../lib/pipelines/inject.js', import.meta.url), 'utf8')))
+  }
+
+  // 17e（验收 6）：检索行为不受影响——门槛、scope、日志字段照旧
+  {
+    let n = 0
+    const { call, lastArgs, logs } = setup({
+      pins: PINS,
+      hits: () => [{ id: `mem-q${++n}`, content: `检索记忆${n}`, score: 0.5, layer: 'sm', updated_at: Date.now() }],
+      // setup 的 cfg 是**取配置的函数**（对应真实的 getCfg），不是配置对象本身
+      cfg: () => CFG_SESSION({ features: { userMessageTrigger: true } }),
+    })
+    const d1 = await call('记忆偏好问题', fb)
+    check('17e 首轮常驻在前、检索在后（位置稳定）', textOf(d1).indexOf('常驻要点') < textOf(d1).indexOf('与当前工作相关的既有记录'))
+    const d2 = await call('另一个问题', fb)
+    check('17e 第二条用户消息照常检索注入', textOf(d2).includes('#mem-q2'))
+    check('17e 第二条里没有再出现常驻整份', !textOf(d2).includes('#mem-p1'))
+    check('17e 检索门槛与 scope 参数原样传下去', lastArgs.opts.minScore === 0.02 && lastArgs.opts.scope.includes('global'))
+    check('17e 检索日志字段未被改动（picked/ids 照旧）', logs.at(-1)?.picked === 1 && logs.at(-1)?.ids?.length === 1)
+  }
+
+  // 17f（验收 7）：切回 step 档 → 与改动前一致（首轮注入 + 内容变则重发；内容不变由块指纹去抖）
+  {
+    let list = [PINS[0]]
+    // 步距压到 2，省得为了踩到节拍点写一长串无意义的步
+    const CFG_STEP = () => ({ ...CFG_SESSION({ stepInterval: 2 }), pinnedInjection: 'step' })
+    const { call } = setup({ hits: [], pins: () => list, cfg: CFG_STEP })
+    const d1 = await call('甲', fb) // step 1 → 首轮，注入
+    await call('乙', fb)            // step 2 → 距上次 1 步 < 2 → 节流
+    const d3 = await call('丙', fb) // step 3 → 距上次 2 步 → 步距到
+    check('17f step 档首轮注入整份且措辞为「恒定注入」', textOf(d1).includes('恒定注入') && textOf(d1).includes('#mem-p1'))
+    check('17f step 档步距到、清单未变 → 与 §10c 一致（块指纹去抖，不刷屏）', memBlocks(d3).length === 0)
+    list = [PINS[0], PINS[1]]
+    await call('丁', fb)            // step 4 → 节流
+    const d5 = await call('戊', fb) // step 5 → 步距到，清单已变
+    check('17f step 档清单变了 → 重发**整份**（旧行为；session 档此时只发差量，见 17b）',
+      memBlocks(d5).length === 1 && textOf(d5).includes('#mem-p1') && textOf(d5).includes('#mem-p2'))
+  }
+
+  // 17g：预热不再重复摆常驻（需求 §六.4）——session 档下由注入管线在首轮负责
+  {
+    const { attachPreheatPipeline } = await import('../lib/pipelines/inject.js')
+    const mkPreheat = (cfgFn) => {
+      const events = {}
+      let text = ''
+      const agent = {
+        id: 'pre-1',
+        session: {},
+        ctx: {
+          inject: (_svc, cb) => {
+            cb({ systemPrompt: { getSectionOrder: () => 0, section: (o) => { text = o.text() } } })
+            return { dispose() {} }
+          },
+        },
+      }
+      const ctx = {
+        on: (n, cb) => { events[n] = cb },
+        // 通道 A 的准入门槛：ctx.get('systemPrompt') 必须存在（老内核没有 → 自动走通道 B）。
+        // 这里给一个非 undefined 的占位，模拟 0.2.0-rc.2。
+        get: (name) => (name === 'systemPrompt' ? {} : undefined),
+      }
+      attachPreheatPipeline(ctx, {
+        store: {
+          listPinned: () => [{ id: 'mem-p1', type: 'lesson', content: '教训甲', abstract: 'principle' }],
+          list: () => [{ id: 'mem-s1', type: 'note', content: '种子记忆', abstract: 'principle', layer: 'sm', scope: 'global', keywords: [] }],
+          getMeta: () => null,
+        },
+        getCfg: cfgFn,
+        wsRegistry: { list: () => [] },
+        logStore: () => {},
+      })
+      events['agent/created']({ agent })
+      return { text: () => text }
+    }
+    const session = mkPreheat(() => ({ ...CFG_SESSION(), features: { preStepInject: true, preheatRoute: 'prompt-section' } }))
+    // 注意：预热块头本身就写着「常驻/画像优先的长期记忆」，所以判据取**条目行**（`- [常驻·…]`）
+    // 而不是"块里有没有常驻这两个字"——那会把块头也算进去，是一条会自己骗自己的断言。
+    check('17g session 档：预热块不含常驻条目（避免首轮两段重复）',
+      !session.text().includes('[常驻·') && session.text().includes('种子记忆'))
+    const step = mkPreheat(() => ({ ...CFG_SESSION(), pinnedInjection: 'step', features: { preStepInject: true, preheatRoute: 'prompt-section' } }))
+    check('17g step 档：预热照旧摆常驻条目（旧形态不变）', step.text().includes('[常驻·lesson] 教训甲'))
+  }
+
+  // 17h（schema + 容错）：档位默认值与非法值处置
+  {
+    const c = cfgOf({})
+    check('17h pinnedInjection 默认 session', c.pinnedInjection === 'session')
+    check('17h 显式 step 被接受', cfgOf({ pinnedInjection: 'step' }).pinnedInjection === 'step')
+    const { call } = setup({ hits: [], pins: PINS, cfg: () => ({ ...CFG_SESSION(), pinnedInjection: '瞎写的' }) })
+    const d = await call('开场', fb, { agent: { id: 'sess-bad', session: {} } })
+    check('17h 非法档位静默回落 session（照常注入不抛错）', textOf(d).includes('会话级注入'))
+  }
+
+  // 17j（需求 §六.1 长会话截断）：步号倒退 = 会话被 clear/compact 过 → 重发整份兜底
+  {
+    const { handler, logs } = setup({ hits: [], pins: PINS, cfg: CFG_SESSION })
+    const agent = { id: 'sess-compact', session: {} }
+    const run = (turn, step) => handler(
+      { messages: [userMsg(`第${turn}轮`)], agent, turn, step, signal: {} },
+      async () => ({ kind: 'enter', messages: [userMsg('x'), { type: 'context' }] }),
+    )
+    const d1 = await run(1, 1)
+    await run(1, 2)
+    // 压缩后内核从 turn 1 / step 1 重数 —— 步号倒退
+    const d3 = await run(1, 1)
+    check('17j 首轮注入整份', textOf(d1).includes('#mem-p1'))
+    check('17j 步号倒退（compact/clear 后重数）→ 重发整份兜底',
+      memBlocks(d3).length === 1 && textOf(d3).includes('#mem-p1') && logs.at(-1)?.pinPhase === 'restart')
+    check('17j 重注入留下可对账的日志（pin_restart）', logs.some((l) => l.ev === 'inject.pin_restart'))
+    // 兜底之后仍回到"清单没变就不发"
+    const d4 = await run(1, 2)
+    check('17j 兜底之后照旧按 unchanged 走', memBlocks(d4).length === 0)
+    // 反向守卫：正常推进不得被判成 restart（否则每一轮都会重发整份）
+    const s2 = setup({ hits: [], pins: PINS, cfg: CFG_SESSION })
+    const a2 = { id: 'sess-normal', session: {} }
+    await s2.handler({ messages: [userMsg('一')], agent: a2, turn: 1, step: 1, signal: {} }, fb)
+    await s2.handler({ messages: [userMsg('二')], agent: a2, turn: 1, step: 2, signal: {} }, fb)
+    await s2.handler({ messages: [userMsg('三')], agent: a2, turn: 2, step: 1, signal: {} }, fb)
+    check('17j 正常换轮（turn 1→2）不算 restart', !s2.logs.some((l) => l.ev === 'inject.pin_restart'))
+  }
+
+  // 17i：增量渲染与差分（纯函数层，不经过管线）
+  {
+    const { pinnedItemMap, diffPinned, renderPinnedDelta } = await import('../lib/util.js')
+    const a = { id: 'x', type: 'lesson', content: '甲' }
+    const b = { id: 'y', type: 'note', content: '乙' }
+    const empty = diffPinned(new Map(), [a])
+    check('17i 没有旧账 → 全部算新增', empty.added.length === 1 && empty.removed.length === 0)
+    const mod = diffPinned(pinnedItemMap([a, b]), [a, { ...b, content: '乙改' }])
+    check('17i 内容变了 → updated（不是 added）', mod.updated.length === 1 && mod.updated[0].id === 'y' && mod.added.length === 0)
+    const drop = diffPinned(pinnedItemMap([a, b]), [a])
+    check('17i 少了 → removed 且带上次那行原文', drop.removed.length === 1 && drop.removed[0].prevLine.includes('乙'))
+    const none = diffPinned(pinnedItemMap([a]), [a])
+    check('17i 完全一致 → 三个数组都空（管线据此判定 unchanged）', none.added.length + none.updated.length + none.removed.length === 0)
+    check('17i 空差分 → 空文本（不产生空块头）', renderPinnedDelta(none) === '')
+    const deltaText = renderPinnedDelta(drop)
+    check('17i 移除行回显上次正文，不是裸 id', deltaText.includes('➖ 移除') && deltaText.includes('乙'))
+  }
 }
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail ? 1 : 0)
