@@ -112,6 +112,7 @@ function agoText(ts, now = Date.now()) {
  *  交互：拖节点（降阻尼 + 1 环速度前馈）、拖背景平移、滚轮以鼠标为中心缩放、hover 高亮邻居、点击选中
  *  性能：单 Canvas 每帧整绘（数百节点 <5ms）；选中/hover 经 ref 传入，组件零重渲染
  */
+
 const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef, drawRef, physics, focusIdsRef, themeFocusRef }) {
   const canvasRef = useRef(null)
   const hoverRef = useRef(null)
@@ -222,7 +223,21 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
     /** 节点世界半径（v0.10.11：**不随缩放变化**的布局常量）。原式带了 /√k：
      *  半径随缩放漂移 → "节点不重合"无法成为布局约束（放大就重叠），观感也会忽大忽小。
      *  现在半径是布局空间常量，配合下面的碰撞规避给出硬保证：任何缩放倍率下都不重合。 */
-    const nodeRadiusOf = (n) => 7 + Math.min(n?.degree ?? 0, 14) * 0.9
+    /**
+   * 节点半径（v0.17.0 加容器项）。
+   *
+   * 合并产物的半径要**明显大于**普通节点——它代表的不止是一条记忆，而是好几条。
+   * 用 sqrt 增长（面积线性于数量）而不是线性：12 条合并的节点半径是普通节点的
+   * 约 2.7 倍（1→√12），视觉上"大而不霸屏"；线性增长会让它变成巨无霸把主题团挤散。
+   *
+   * 为什么必须一起进物理：半径同时喂给碰撞检测（COLLIDE_GAP），容器变大后
+   * 周围节点会自动让位——否则子点画出来会跟邻居重叠。
+   */
+  const nodeRadiusOf = (n) => {
+    const base = 7 + Math.min(n?.degree ?? 0, 14) * 0.9
+    const kids = Math.max(0, n?.childCount ?? 0)
+    return kids > 0 ? base * Math.sqrt(1 + kids) : base
+  }
     // v0.15.1：REP_C 这类力常数已全部搬到 graph-force.js（唯一定义处），这里不再留一份影子常量。
     const COLLIDE_GAP = 6        // 节点之间的最小空隙（世界坐标）；力已负责间距，这里只兜底"绝不重合"
     const collideCell = 2 * nodeRadiusOf({ degree: 14 }) + COLLIDE_GAP
@@ -725,6 +740,39 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
         ctx.fillStyle = n.color
         ctx.fill()
+        /**
+         * 容器可视化（v0.17.0 主题合并）：合并产物画成"装着子记忆的容器"。
+         *
+         * 为什么是**画在容器内的一圈小点**而不是真的把子节点塞进去跑物理：
+         * 子记忆（已归档）不参与布局计算——它们若进物理循环，会把这个主题团撑散、
+         * 把邻居拱走。所以子点位置**由父节点推导**（固定角度均匀分布），不跑力。
+         * 这样"看得见"与"不影响布局"两件事同时成立。
+         *
+         * 默认只在放大到一定程度或聚焦时画小点：缩得太小时它们只是一个像素的噪点。
+         */
+        if ((n.childCount ?? 0) > 0 && (transform.k > 0.7 || isFocus)) {
+          const kids = Math.min(n.childCount, 12)
+          const kr = Math.max(2.2, r * 0.14)          // 子点半径
+          const orbit = r * 0.62                       // 子点分布半径（容器内一圈）
+          for (let ki = 0; ki < kids; ki++) {
+            const ang = (ki / kids) * Math.PI * 2 - Math.PI / 2
+            const kx = n.x + Math.cos(ang) * orbit
+            const ky = n.y + Math.sin(ang) * orbit
+            ctx.beginPath()
+            ctx.arc(kx, ky, kr * ease, 0, Math.PI * 2)
+            ctx.fillStyle = "#ffd54f"
+            ctx.globalAlpha = 0.85 * (focusId ? (isFocus ? 1 : 0.35) : 1) * ease
+            ctx.fill()
+          }
+          // 容器外圈描边：让"这是一团"读得出来
+          ctx.beginPath()
+          ctx.arc(n.x, n.y, r + 2 / transform.k, 0, Math.PI * 2)
+          ctx.strokeStyle = "#ffd54f"
+          ctx.lineWidth = 1.2 / transform.k
+          ctx.globalAlpha = 0.5 * ease * (focusId ? (isFocus ? 1 : 0.3) : 1)
+          ctx.stroke()
+          ctx.globalAlpha = (focusId ? (isFocus || isNbr ? 1 : (isTheme ? 0.85 : 0.2)) : 1) * ease * (dimmed ? 0.12 : 1)
+        }
         // 版本环（四维蠕虫的时间痕迹）：更新过几次 = 几圈年轮（封顶 3 圈）
         if (n.versions > 1) {
           const rings = Math.min(n.versions - 1, 3)
@@ -935,6 +983,53 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block", cursor: "grab" }} />
 })
 
+/**
+ * 合并来源列表（v0.17.0 主题合并）：点开看这条结论是由哪几条合来的。
+ *
+ * 为什么需要它：合并是**有损**的——模型合成时只保留关键约束，细节会丢。
+ * 源记忆虽然归档了（不进检索、不进图谱顶层），但它们的数据完整保留；
+ * 这个面板就是那道"要看原文随时能看"的口子。没有它，用户对合并只能选择信任。
+ */
+const MergeSources = memo(function MergeSources({ id, count }) {
+  const [open, setOpen] = useState(false)
+  const [group, setGroup] = useState(null)
+  const [err, setErr] = useState("")
+  const load = async () => {
+    if (group || err) { setOpen((v) => !v); return }
+    try {
+      const r = await fetch("/dsh-memory/merged?id=" + encodeURIComponent(id))
+      const j = await r.json()
+      if (j && Array.isArray(j.children)) { setGroup(j); setOpen(true) }
+      else { setErr("接口未返回数据") ; setOpen(true) }
+    } catch (e) { setErr(String(e && e.message || e)); setOpen(true) }
+  }
+  return (
+    <div style={{ margin: "12px 0 0" }}>
+      <button
+        onClick={load}
+        style={{ fontSize: 12, padding: "4px 10px", cursor: "pointer", background: "#242424", color: "#ffd54f", border: "1px solid #3a3a3a", borderRadius: 4 }}
+      >
+        {open ? "▾" : "▸"} 合并来源（{count} 条）
+      </button>
+      {open && err ? <p style={{ fontSize: 12, color: "#e07b39", margin: "8px 0 0" }}>读取失败：{err}</p> : null}
+      {open && group ? (
+        <div style={{ marginTop: 8, borderLeft: "2px solid #3a3a3a", paddingLeft: 10 }}>
+          {group.children.map((c, i) => (
+            <div key={c.id} style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: "#888" }}>
+                {i + 1}. {c.type} · {new Date(c.created_at).toLocaleDateString("zh-CN")} · {c.archived ? "已归档" : "活跃"}
+              </div>
+              <div style={{ fontSize: 12, lineHeight: 1.55, color: "#bbb", whiteSpace: "pre-wrap", maxHeight: 160, overflowY: "auto" }}>
+                {c.content}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+})
+
 /** 详情面板（memo：仅选中变化时重渲染）。 */
 const DetailPanel = memo(function DetailPanel({ selected, data }) {
   const { colorOf, adj, nodeById } = useMemo(() => {
@@ -966,6 +1061,12 @@ const DetailPanel = memo(function DetailPanel({ selected, data }) {
           : null}
       </p>
       <p style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{selected.content}</p>
+      {/**
+        * 合并来源（v0.17.0）：这条记忆是由哪几条合来的。
+        * 默认不展开——它的价值是"让人知道这条结论有底可查"，而不是每次都读一遍原文。
+        * 点开才拉取（懒加载，一次 HTTP），避免打开面板就为每条记忆拉一遍源内容。
+        */}
+      {(selected.childCount ?? 0) > 0 ? <MergeSources id={selected.id} count={selected.childCount} /> : null}
       <h5 style={{ margin: "14px 0 6px", fontSize: 12, color: "#aaa" }}>关联记忆</h5>
       {(adj.get(selected.id) ?? []).length === 0 ? (
         <p style={{ fontSize: 12, color: "#777" }}>暂无关联</p>
@@ -1170,7 +1271,7 @@ function MemoryGraphView({ scope }) {
           </select>
           <button onClick={load} style={{ padding: "1px 10px", borderRadius: 5, border: "1px solid #555", background: "transparent", color: "#aaa", cursor: "pointer", fontSize: 12 }}>刷新</button>
         </div>
-        <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} themeFocusRef={themeFocusRef} />
+          <ObsidianGraph data={filtered} onSelect={setSelected} selectedRef={selectedRef} drawRef={drawRef} physics={physics} focusIdsRef={focusIdsRef} themeFocusRef={themeFocusRef} />
         <div style={{ position: "absolute", right: 14, bottom: 10, fontSize: 11, color: "#777", zIndex: 2, display: "flex", flexWrap: "wrap", gap: 8, maxWidth: "72%", justifyContent: "flex-end", alignItems: "center" }}>
           {(filtered?.nodes ?? []).length > 0 && (
             <>
