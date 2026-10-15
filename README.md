@@ -13,6 +13,7 @@ DSH（DeepSeek Harness）进阶自动记忆插件——**用户每条消息都�
 | **用户消息触发检索 (v0.16.0)** | **每条用户消息（文本变了）必检一次，不受步距节流限制**。修的是这个缺口：步距按"步"计，而一轮用户消息通常只走几步——平稳档（12 步）下用户连问几句新问题，整段都在吃几句之前那次检索的结果。工具步与自主轮次仍按步距节奏，两条触发源共用下游的检索/预算/去抖（日志 `trigger: user-message \| interval` 可逐条对账） |
 | **写入侧决策门 (v0.16.0)** | **只在写入侧**：轮次结束时问一次本机决策模型（StartLux-Decision 9B，HTTP 8090，输出 0 token，实测 0.3~0.9 秒）「这段对话值得记吗」，答"不值得"就省掉那次几十秒的 LLM 提取（改落一条 ep 快照，记录不丢）。**非对称采信**——只有它高把握说"不值得"（门槛默认 0.9）才起作用；服务没起 / 超时 / 返回形状不对 / 没把握 / 本轮被取消一律照常提取，失败后冷却 5 分钟。**检索路径上没有决策门**（2026-10-06 定）：用户消息来了就直接查库，不问"要不要查"——查库是本职，加一道判断只会在关键路径上多花 0.4~1.2 秒，还要承担"判错就漏检索"的风险 |
 | **自动注入** | `agent/pre-step` 检索相关记忆并**并入本步 decision**（不额外占一个回合）；常驻块 + 检索块 token 预算独立 + 块 hash 去抖 + 防循环窗口 |
+| **常驻注入粒度 (v0.18.0)** | 钉选记忆的注入时机可配（`pinnedInjection`，默认 **session**）：**session** = 会话首轮带一次完整清单，之后只在「新钉选 / 取消钉选 / 已钉内容被改」时补一条**增量**（只报变化了什么，块尾声明"未列出的条目仍然有效"），不重复发整份；**step** = 旧行为（每步随注入块抵达），一键退回便于对照。两种档位下常驻的语义完全一样——**不看相关性、不看得分、不受节流**，改的只是时机与去重。增量那一步不受步距节流（否则平稳档下钉完要等十来步才看得见），且不发检索。长会话被压缩/清空（步号倒退）时自动重发整份兜底 |
 | **自动沉淀** | `turn/end` 写入 + 价值门过滤 + Jaccard 去重合并（相似记忆更新而非新建） |
 | **分层记忆** | `ep`（情景，turn 快照）/ `sm`（语义，长期知识），**scope 项目隔离**：按会话工作目录自动分层（workspaceRegistry fallback），画像跨项目公共层 |
 | **时间维度（世界线）** 🐛 | 更新追加版本，旧版本保留但隐藏（不参与检索/注入）；`maxVersions` 滚动裁旧 + 回滚链 |
@@ -174,6 +175,9 @@ memory:
   injectMinScore: 0.015     # 注入最低相关分（RRF 融合量纲，三路全中 ~0.049；0.015 ≈ 至少一路排前 13）
   injectPace: steady        # 注入节奏档位：aggressive 激进=每 4 步 / steady 平稳=每 12 步（默认）/ lazy 懒惰=每 30 步 / custom 自定义
   stepInterval: 12          # 仅 injectPace=custom 时生效（1~60）
+  pinnedLimit: 8            # 常驻（钉选）记忆每次注入最多带几条
+  pinnedMaxTokens: 600      # 常驻块的独立 token 预算（不与被检索到的记忆抢 injectMaxTokens）
+  pinnedInjection: session  # v0.18.0 常驻注入粒度：session 会话级（默认，首轮一次+变化时增量）/ step 每步（旧行为）
   maxRecentPerAgent: 6      # 防循环窗口
   maxVersionsPerMemory: 8   # 世界线长度
   features:
@@ -257,7 +261,7 @@ memory:
 
 | 字段改动后的生效时机 | 字段 |
 |---|---|
-| **即时生效（live，读配置时才取值）** | `scope`、`injectMaxTokens`、`injectMinScore`、`injectPace`、`stepInterval`、`maxRecentPerAgent`、`features.*`（`time` 除外）、`refiner.*`、`housekeeping.*`、`events.*`、`logging.*`、`graphView.*` |
+| **即时生效（live，读配置时才取值）** | `scope`、`injectMaxTokens`、`injectMinScore`、`injectPace`、`stepInterval`、`pinnedLimit`、`pinnedMaxTokens`、`pinnedInjection`、`maxRecentPerAgent`、`features.*`（`time` 除外）、`refiner.*`、`housekeeping.*`、`events.*`、`logging.*`、`graphView.*` |
 | **需重启 DSH（初始化期构造）** | `enabled`、`dbFile`、`maxVersionsPerMemory`、`features.time`、`embedding.*`、`reranker.*`（含 `topK`/`minCandidates`/`rrfWeight`） |
 | **需刷新页面** | 客户端面板与图谱/日志面板（`lib/client.js` 产物） |
 
@@ -288,7 +292,7 @@ node tests/test-link-suggest.mjs    # 语义连边判定专项（18 项：四道
 node tests/test-semantic-links.mjs  # 语义连边集成专项（11 项：真实 store + 构造向量，覆盖 KNN/MNN/落边/回滚口径）
 node tests/test-graph-geometry.mjs # 主题区域几何 + 布局缓存 + 布局策略专项（66 项：凸包贴合/外扩精度/最小外接圆最优性与确定性/就地聚簇/密度核心/平移跟随；纯函数，无需副本环境）
 node tests/test-graph-field.mjs # 图谱力模型 + 种子装箱专项（56 项：邻域场零点与单调性/塌陷护栏（引力累加 vs 斥力封顶）/标度不变/各向同性/限速/种子确定性与分量团聚/同主题两层层内紧外松/600 点真实尺度零重叠；纯函数）
-node tests/test-inject-pipeline.mjs # 注入管线专项（138 项：用户消息触发必检/同文本不重复检索/两条触发源对账/注入侧不接决策模型（源码级守卫）/decision 合并注入/步距必检/三档节奏（激进 4·平稳 12·懒惰 30）/自定义档/档位表与 UI 同源/去抖/兜底/守卫/reject）
+node tests/test-inject-pipeline.mjs # 注入管线专项（186 项：会话级常驻注入（首轮一次/清单变化增量/pin·unpin·改内容/压缩后重注入兜底/step 档对照）/用户消息触发必检/同文本不重复检索/两条触发源对账/注入侧不接决策模型（源码级守卫）/decision 合并注入/步距必检/三档节奏（激进 4·平稳 12·懒惰 30）/自定义档/档位表与 UI 同源/去抖/兜底/守卫/reject）
 node tests/test-write-gate.mjs # 写入侧决策门专项（42 项：上半场假门驱动管线——高把握"不值得"才省 LLM 且仍落 ep 快照/值得·没把握·服务不在·门抛错一律照常提取/关掉不问/太短不问；下半场真 HTTP 假服务——采信门槛与降级链/请求体形状与截断/HTTP 错·非 JSON·缺字段·超时·连不上/取消不设冷却/失败冷却）
 node tests/test-refiner-retry.mjs # 瞬时故障重试专项（34 项：只重发网络/5xx/流畸形（event precedes message_start·TRANSPORT），配额 429 与格式错 400 不重发/指数退避封顶 8s/finish 块与抛错两条路径都覆盖/重试用尽仍抛错/transientRetries=0 可退回旧行为/**重试路径不得访问 ctx 受限属性**（同构严格假 ctx 守护））
                           # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行
