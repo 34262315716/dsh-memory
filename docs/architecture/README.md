@@ -1,6 +1,6 @@
 # dsh-memory 架构文档
 
-> 对应 **v0.16.2**。本文档按主题分章，每章一个文件——改哪块看哪章，不必通读。
+> 对应 **v0.19.0**。本文档按主题分章，每章一个文件——改哪块看哪章，不必通读。
 > 内容描述**当前实现**：模块划分、数据结构、三条管线、图谱、治理、配置、集成与工程约定。
 > 演进历史见 [`../CHANGELOG.md`](../CHANGELOG.md)；交互式架构图见 [`../architecture.html`](../architecture.html)；原始设计方案见 [`../memory-plugin-proposal.md`](../memory-plugin-proposal.md)。
 

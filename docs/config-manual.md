@@ -10,8 +10,8 @@
 | 层级 | 位置 | 作用 |
 |---|---|---|
 | 1 默认值 | 插件内 `lib/config.js`（schemastery schema） | 未写任何配置时生效 |
-| 2 组合层（挂载默认） | `C:\Users\28643\.dsh\profiles\web-desktop\cordis.patch.yml` → `- insert: - id: dsh-memory` 段的 `config:` | 插件默认配置（当前含 enabled/injectMaxTokens 等） |
-| 3 用户层（**改这里**） | `C:\Users\28643\.dsh\settings.yaml` → `memory:` 段 | 覆盖层，优先于层级 2 |
+| 2 组合层（挂载默认） | `$DSH_HOME/profiles\web-desktop\cordis.patch.yml` → `- insert: - id: dsh-memory` 段的 `config:` | 插件默认配置（当前含 enabled/injectMaxTokens 等） |
+| 3 用户层（**改这里**） | `$DSH_HOME/settings.yaml` → `memory:` 段 | 覆盖层，优先于层级 2 |
 
 合并规则：**字段级合并**，用户层（settings.yaml）覆盖组合层（patch config），组合层覆盖 schema 默认值。只写想改的键，其余自动继承。
 
@@ -157,7 +157,7 @@
 
 1. **备份**（每次必做）：
    ```bash
-   cp "C:/Users/28643/.dsh/settings.yaml" "C:/Users/28643/.dsh/settings.yaml.bak-$(date +%Y%m%d-%H%M%S)"
+   cp "$DSH_HOME/settings.yaml" "$DSH_HOME/settings.yaml.bak-$(date +%Y%m%d-%H%M%S)"
    ```
 2. **编辑** `settings.yaml` 的 `memory:` 段。示例——把注入分数调严 + 关自动写入：
    ```yaml
@@ -169,7 +169,7 @@
    > ⚠️ **YAML 缩进警告**：`memory:` 顶格，子键统一 2 空格缩进，嵌套再 +2。曾因缩进错误导致 EAC 启动崩溃（`BLOCK_AS_IMPLICIT_KEY at line 458`）。改完可先 `node -e "require('js-yaml')..."` 或用任意 YAML 校验器验证。
 3. **生效**：仅改参数类键（§3 除「改后重启」标注者）→ **立即生效**，无需重启。改 embedding/reranker/dbFile/enabled → 托盘完全退出 EAC 再启动。（提示：关窗 ≠ 退出，须托盘右键退出。）
 4. **验证**（三选一）：
-   - 日志：`C:/Users/28643/AppData/Roaming/Deepseek Harness EAC/logs/dsh-web.log` 里 `[dsh-memory]` 行（启动段 + 每次 LLM 提取失败降级提示）。
+   - 日志：`%APPDATA%/Deepseek Harness EAC/logs/dsh-web.log` 里 `[dsh-memory]` 行（启动段 + 每次 LLM 提取失败降级提示）。
    - 运行期 RPC（需 Cookie，见下）：
      ```
      POST http://127.0.0.1:10012/api/settings/describe

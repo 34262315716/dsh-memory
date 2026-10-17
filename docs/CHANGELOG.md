@@ -1,5 +1,63 @@
 # 开发历程（CHANGELOG）
 
+## v0.19.0 — 主题簇治理、检索下推与记录器补库体检（2026-10-17）
+
+本轮来自一次只读审查与生产库实测。核心是把三处「随数据量变坏」的设计修掉，并补齐工程入口。
+
+### 一、主题簇：1509 个碎片簇 → 331 个有效簇
+- 实测：1509 个簇里 1178 个只有 1 个成员；每行质心是 4096 维 JSON（约 86KB），合计 129.5MB = 库的 68%。单成员簇的 label 恒为空，而 `UPDATE memories SET theme = 簇标签` 不判空，于是把 LLM 打的 theme 清成空串——1178 条单成员簇记忆里只剩 2 条 theme 非空。
+- 修：theme 改 `CASE WHEN ? <> '' THEN ? ELSE theme END`；单点记忆不再生成簇（标 `solo`；同一批里出现相似记忆仍可成簇）；启动时清理历史碎片簇；质心量化到 1e-4。
+- 迁移：`tools/migrate-theme-clusters.mjs`（`--dry-run` / `--vacuum`）。实测 1509→331 簇、质心 132.8MB→10MB、库文件 191MB→71.4MB、WAL 123MB→0。已被清空的 1272 条 theme 不在版本表里，无法回滚；需要时重跑一次打标。
+
+### 二、检索热路径
+- 关键词路下推到 SQL（JSON1 `json_each`），不再把整表拉进 JS 做 `JSON.parse` 与逐条 `toLowerCase`；archived 过滤改 SQL 条件；向量命中改批量 `IN`；结果一次批量取回；访问加成批量事务。实测关键词路 20ms→3.7ms。
+- 中文 FTS 修复：tokenize 只产 2 字 bigram，而 FTS 查询过滤 <3 字，中文 query 的 FTS 分支过去永远为空。现在查询侧额外生成 3-gram 切片（实测命中 0.3ms）。
+- 新增索引：archived / theme / cluster / updated_at / (layer,archived,updated_at) / pinned。**必须在补列之后建**：SCHEMA 常量里直接建 cluster_id 索引会让整段 SCHEMA 因 "no such column" 失败（新库同样中招）。
+
+### 三、巡检不再重嵌入
+- `dedupScan` 改读 `memory_vectors` 已有向量（vec0 返回 Uint8Array，按 Float32Array 解析），只有向量缺失才回退重嵌入。活跃库 705 条，原来每次巡检约 18 万字符远程嵌入。
+
+### 四、生命周期
+- 注入去抖 hash 改到**真正注入之后**记账。此前在 next() 之前写，reject/异常会留下「已注入」的假记录，下一次同样内容被去抖拦掉。
+- `agent/disposed` 清理全部 per-agent Map/Set；写入管线的 turnCache / lastTurn / sessionTurns 同样清理。
+- 会话结束 flush 汇总。此前只在满 12 轮时提交，不到 12 轮就结束的会话最后一段永远不汇总。
+- WAL checkpoint：启动批次结束、close、巡检后截断。
+
+### 五、工具与端点
+- `memory_search` 加 `scope`（all / 指定）与 `minScore`；`memory_list` 加 `scope`（描述里一直写着，参数却没有）。
+- `/dsh-memory/merged` 的聚合容器 SQL 收进 `store.aggregateGroup`（此前与 graph-snapshot 复制同一段 SQL）。
+- `/dsh-memory/health` 加 `database` 段：规模、归档、簇、单成员簇、WAL 字节、向量路最后一次失败。
+
+### 六、前端与工程
+- bundle 开 minify：187KB→112KB（gzip 45.9→35.7KB）。
+- spacing 兜底 1.6→1.2（与 FIELD_DEFAULTS 一致）；删除永不生效的 `heat()`。
+- CI 路径修正：此前 `node "$t.mjs"` 指向仓库根，而套件在 tests/，CI 从未真正跑过；改 `tests/` + 离线白名单。
+- package.json 加 scripts（test / test:offline / build:client）；新增 `tools/run-tests.mjs`。
+- deploy.mjs 认 DSH_HOME；test-record --live 改只读打开；e2e overlay 去本机绝对路径；删除空临时库。
+- 测试：28 套 / 980 断言全绿。test-incremental 的单点簇判据按新语义更新。
+
+## v0.18.1 — 版本号对齐（2026-10-16）
+
+package.json 此前停在 0.16.2，而提交线已到 v0.18.0（主题合并 → 图谱折叠 → 常驻注入粒度，几次都没同步 version 字段）。按实际开发线对齐为 0.18.1。只改 version，不含代码改动。
+
+## v0.18.0 — 常驻记忆注入粒度改为会话级（2026-10-16）
+
+钉选记忆从「每一步都注入」改成「会话首轮一次 + 清单变化时增量」，可用 `pinnedInjection` 一键切回旧行为（默认 session）。
+
+- inject.js 加会话记账（agentId → 清单指纹）与 `resolvePinned`（initial / delta / unchanged / restart 四相）；util.js 加 `pinLineBody` / `pinnedItemMap` / `diffPinned` / `renderPinnedDelta`。
+- 两个实现决策：① 记账只在真正注入后 commit（提前记会让被节流/去抖拦下的差量永久丢失）；② 压缩/清空导致的步号倒退判为 restart，重发整份并重置 lastBlockHash / recentInjected。
+- 测试：test-inject-pipeline 新增 §17（45 项，七条验收标准 + 会话隔离 + 预热不重复 + 档位容错），全套 28 个套件全绿。
+
+## v0.17.1 — 图谱节点上限 + 溢出按主题折叠（2026-10-15）
+
+v0.17.0 把 `store.list({limit:1000})` 换成无上限查询，真库 1970 条全进图谱，seedLayout 从 1.5s 涨到 6.8s。改为保留 maxNodes 条独立节点、超出的按主题折叠成容器（带 childCount 与完整 memberIds），一条都不丢、可点开。折叠门槛 FOLD_MIN=3（无门槛时 106 个小容器铺满外圈）。默认 850。容器半径改对数压制。实测节点 1970→1064、seedLayout 6.8s→1.8s。
+
+## v0.17.0 — 写入侧判据、scope 判定与主题合并（2026-10-15 ~ 10-16）
+
+- 提取判据改为「这句话下次能提供有效的指导吗」：事实可以写，前提是重要到能指导下一次判断；新增 global/project 的 scope 判定（把项目名换掉还成立吗），会话目录名降为兜底。
+- 主题合并：memories 增 merged_from / merged_into 双向字段；`mergeMemories` / `mergeCandidates` / `mergedGroup`；巡检新增 consolidateTheme / mergeThreshold / mergeLimit；图谱把合并产物画成容器，`/dsh-memory/merged` 可展开来源。
+- 提示词总长压到 9996 字（上限 10000）。
+
 ## v0.16.2 — 探针不再骗人 + 设置页整理 + 架构文档拆章（2026-10-14）
 
 本轮来自一次真实误判：**我一度以为重排坏了**，其实是探针自己选错了样本。

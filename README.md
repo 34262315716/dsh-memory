@@ -43,8 +43,10 @@ memory_search            检索（语义 + 关键词混合）
 memory_forget            删除指定记忆
 memory_merge             合并两条相似记忆
 memory_purge             清空作用域/全部
-memory_list              浏览
+memory_list              浏览（可按 scope/layer/type 过滤）
+memory_pin               钉选/取消钉选常驻记忆（不看相关性、恒定/会话级注入）
 memory_stats             统计（含向量/图谱状态）
+memory_reembed           维度迁移或嵌入失败后补写缺失向量
 memory_graph_neighbors   记忆图谱邻域（记忆级 k-hop：相邻记忆 id+边类型+跳数）
 memory_graph_communities 社区检测/查看
 memory_graph_path        记忆最短路径（记忆 id 序列+边类型链）
@@ -68,16 +70,16 @@ system_now               获取当前系统时间（本地 + ISO + Unix + 星期
 ```
 DSH 运行时 ──pre-step──▶ 注入侧 ──查询──▶ 检索器 ──┬─▶ FTS5（BM25）
    ▲                                              ├─▶ sqlite-vec（KNN）
-   └──agent.inject()── 注入侧 ◀──RRF 结果── 检索器 ─┴─▶ 记忆图谱（邻域/社区）
+   └──decision.messages── 注入侧 ◀──RRF 结果── 检索器 ─┴─▶ 记忆图谱（邻域/社区）
 DSH 运行时 ──session/event──▶ 写入侧 ──沉淀/去重──▶ MemoryStore ──SQL──▶ SQLite
                                 └──轮次文本──▶ Refiner ──蒸馏──▶ LLM 服务
 ```
 
 📄 交互式架构图：**[`docs/architecture.html`](docs/architecture.html)**（浏览器打开，或 DSH 右侧预览面板直接渲染）
 
-📚 架构文档（**v0.16.2，按主题分 11 章**）：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（总入口）→ [`docs/architecture/`](docs/architecture/README.md)（模块构造 / 数据模型 / 写入 / 检索 / 注入 / 图谱 / 遗忘与管家 / 配置与双内核 / 集成与工具面 / 工程约定 / 已知限制）· 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md) · 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
+📚 架构文档（**v0.19.0，按主题分 11 章**）：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（总入口）→ [`docs/architecture/`](docs/architecture/README.md)（模块构造 / 数据模型 / 写入 / 检索 / 注入 / 图谱 / 遗忘与管家 / 配置与双内核 / 集成与工具面 / 工程约定 / 已知限制）· 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md) · 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-### 模块结构（v0.16.2）
+### 模块结构（v0.19.0）
 
 ```
 lib/index.js           装配壳：settings/init/Web API/管线/工具/ctx.memory（253 行）
@@ -114,7 +116,7 @@ dsh plugin --profile web add ./dsh-memory
 ```
 
 > ⚠️ **先读：npm 上的名字与仓库对不上**
-> `dsh-memory` = 0.1.0（旧物）、`dsh-advanced-memory` = 0.9.17（落后仓库四个 minor），**本仓库这份 0.15.2 从未发布**。
+> `dsh-memory` = 0.1.0（旧物）、`dsh-advanced-memory` = 0.9.17（落后仓库四个 minor），**本仓库这份 0.19.0 从未发布**。
 > 想装本仓库的版本，只能用本地路径（上面的 `add ./dsh-memory`）或先自己 `npm publish`。
 > 另外：方式一用的 entry id 是 `memory`（随包 patch 里写死的），方式二手工行历史上用的是 `dsh-memory`——**客户端两个 id 都认**，所以换挂载方式时设置面板不会掉，但两条挂载行同时存在会让 loader 报 duplicate，切换前请先删旧行。
 
@@ -172,7 +174,7 @@ memory:
   dbFile: ''                # 留空 = ~/.dsh/memory.db
   scope: ''                 # 留空 = global
   injectMaxTokens: 800      # 每次注入 token 预算
-  injectMinScore: 0.015     # 注入最低相关分（RRF 融合量纲，三路全中 ~0.049；0.015 ≈ 至少一路排前 13）
+  injectMinScore: 0.02      # 注入最低相关分（RRF 融合量纲，三路全中 ~0.049；0.02 ≈ 至少一路排前 10）
   injectPace: steady        # 注入节奏档位：aggressive 激进=每 4 步 / steady 平稳=每 12 步（默认）/ lazy 懒惰=每 30 步 / custom 自定义
   stepInterval: 12          # 仅 injectPace=custom 时生效（1~60）
   pinnedLimit: 8            # 常驻（钉选）记忆每次注入最多带几条
@@ -270,35 +272,22 @@ memory:
 ## 🧪 测试
 
 ```bash
-node tests/test.mjs         # 阶段一回归（16 项）
-node tests/test-phase2.mjs  # 阶段二专项（18 项：向量/图遍历/遗忘/merge-purge/社区）
-node tests/test-phase3.mjs  # 阶段三专项（17 项：世界线回滚/8 型边/时间旅行）
-node tests/test-embedder.mjs # 嵌入/重排 seam 单测（29 项：rule/remote/缓存/降级链/rerank 融合与缓存/**bypassCache 让探针绕缓存真打上游**/向量独有命中/真实 API 验「当前配置的模型」）
-node tests/test-health.mjs  # 连通性自检专项（26 项：探针真发请求/402 原文透传/降级态显形/未启用不假检/不抛错/端点日志行字段名对齐）
-node tests/test-refiner-thinking.mjs # 提取器专项（84 项：不设 token 上限/思考流收集/时间预算掐断+断点续跑/空输出救回/不接话即停/续跑上限/跑题重试/多条目与旧格式/items 空不写库/价值门/关键词泛词过滤/**按 provider 分派的关思考姿势（pi-ai 不传字段 vs 官方 Messages 显式传 off）**）
-node tests/test-housekeeping.mjs # 管家/存储专项（30 项：去重/老化/meta/触发/touch/迁移幂等/多 scope/日志）
-node tests/test-events.mjs    # 事件分类专项（21 项：时间线扫描/聚合切分/幂等/级联/gap 敏感/before 方向修正/主题过滤/空库）
-node tests/test-tool-add.mjs  # 工具写入专项（20 项：memory_add 必走图谱连边/关图与 ep 不连/abstract+theme 透传/2-gram 碎片过滤/content 归一化/写后可检索）
-node tests/test-governance.mjs # 管家治理专项（53 项：归档退出检索且可恢复/归并是合成不是堆叠/源记忆归档不删除/并查集成团/dryRun 与 apply 边界/陈旧 ep 判据/stats 分开计数/memory_archive list+restore/归并器）
-node tests/test-rewrite.mjs   # 降级记忆重写专项（15 项：任务/结果拆分 / 候选筛选防空数组假通过 / 重写走更新且旧文进世界线）
-node tests/test-conversation-flow.mjs # 对话流程专项（27 项：纠正走更新既有记忆而非新建/旧内容进世界线可回滚/模型编的 id 改不动无关记忆/混合一轮/supersedes 清洗/提取时可见已知记忆/会话级汇总只收结论）
-node tests/test-incremental.mjs # 增量构建专项（21 项：主题聚类增量/事件水位线增量/尾部合并/旧事件保留/维度迁移自愈/全量对齐）
-node tests/test-update-append.mjs # 更新拼接专项（9 项：更新内容无条件接末尾/持续追加/重复片段去重/+N 版本步进）
-node tests/test-edge-types.mjs   # 边类型专项（9 项：mentions 共现快照/before 收紧/泛词与跨主题不连/beforeAudit dryRun+apply）
-node tests/test-keyword-filter.mjs # 关键词稀有化专项（8 项：pickRareEntities 剔泛词/稀缺升序/graphLink 硬过滤/单实体与停用词不建）
-node tests/test-profile.mjs   # 画像分类专项（16 项：scopeOf 三态/预热画像/aspect 读写/蒸馏 mock LLM；需副本环境）
-node tests/test-crash-safety.mjs # 防崩溃容错（10 项：settings 失败兜底/坏库停用/单工具跳过/正常路径）
-node tests/test-link-suggest.mjs    # 语义连边判定专项（18 项：四道闸门/去重/上限/层级/确定性；纯函数）
-node tests/test-semantic-links.mjs  # 语义连边集成专项（11 项：真实 store + 构造向量，覆盖 KNN/MNN/落边/回滚口径）
-node tests/test-graph-geometry.mjs # 主题区域几何 + 布局缓存 + 布局策略专项（66 项：凸包贴合/外扩精度/最小外接圆最优性与确定性/就地聚簇/密度核心/平移跟随；纯函数，无需副本环境）
-node tests/test-graph-field.mjs # 图谱力模型 + 种子装箱专项（56 项：邻域场零点与单调性/塌陷护栏（引力累加 vs 斥力封顶）/标度不变/各向同性/限速/种子确定性与分量团聚/同主题两层层内紧外松/600 点真实尺度零重叠；纯函数）
-node tests/test-inject-pipeline.mjs # 注入管线专项（186 项：会话级常驻注入（首轮一次/清单变化增量/pin·unpin·改内容/压缩后重注入兜底/step 档对照）/用户消息触发必检/同文本不重复检索/两条触发源对账/注入侧不接决策模型（源码级守卫）/decision 合并注入/步距必检/三档节奏（激进 4·平稳 12·懒惰 30）/自定义档/档位表与 UI 同源/去抖/兜底/守卫/reject）
-node tests/test-write-gate.mjs # 写入侧决策门专项（42 项：上半场假门驱动管线——高把握"不值得"才省 LLM 且仍落 ep 快照/值得·没把握·服务不在·门抛错一律照常提取/关掉不问/太短不问；下半场真 HTTP 假服务——采信门槛与降级链/请求体形状与截断/HTTP 错·非 JSON·缺字段·超时·连不上/取消不设冷却/失败冷却）
-node tests/test-refiner-retry.mjs # 瞬时故障重试专项（34 项：只重发网络/5xx/流畸形（event precedes message_start·TRANSPORT），配额 429 与格式错 400 不重发/指数退避封顶 8s/finish 块与抛错两条路径都覆盖/重试用尽仍抛错/transientRetries=0 可退回旧行为/**重试路径不得访问 ctx 受限属性**（同构严格假 ctx 守护））
-                          # 注：依赖 @deepseek-ai 包，需在部署副本或 harness 环境运行
-node tests/test-record.mjs   # 记录质量自检入口（写入→语义召回→图谱全链路；--live 生产库只读）
-node rebuild-graph.mjs # 图谱重建运维脚本（真嵌入归一化重建 + 语义边）
+node tools/run-tests.mjs            # 全量：发现 tests/ 下全部套件，逐条汇总
+node tools/run-tests.mjs --offline  # 离线：跳过需要 @deepseek-ai 私有 peer 包的套件
 ```
+
+28 套 / 约 980 项断言。按域分：
+
+| 方向 | 套件 |
+|---|---|
+| 存储与检索 | test、test-phase2、test-phase3、test-embedder、test-semantic-links、test-link-suggest |
+| 写入与提取 | test-refiner-thinking / slim / truncation / retry、test-conversation-flow、test-write-gate、test-rewrite |
+| 注入 | test-inject-pipeline（会话级常驻 / 用户消息触发 / 节流 / 去抖） |
+| 图谱与布局 | test-graph-geometry、test-graph-field、test-edge-types、test-keyword-filter |
+| 治理与派生 | test-housekeeping、test-governance、test-events、test-incremental、test-profile |
+| 可靠性与运维 | test-crash-safety、test-health、test-record（--live 只读） |
+
+注：test.mjs、test-inject-pipeline、test-profile、test-tool-add、test-crash-safety、test-governance、test-rewrite 依赖 @deepseek-ai 私有 peer 包，在部署副本或 harness 环境运行；CI 只跑离线白名单。
 
 ## 📄 License
 

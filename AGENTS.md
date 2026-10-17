@@ -4,12 +4,13 @@ DSH（DeepSeek Harness）进阶自动记忆插件：分层记忆（情景/语义
 
 ## 开发须知
 
-- **测试**：统一放在 `tests/`（`node tests/test.mjs` 等；套件清单与说明见 `README.md` §测试）。改动 `lib/` 后需跑全量套件。
+- **测试与收尾检查**：测试统一放在 `tests/`。任何改动完成后跑 `node tools/check.mjs`（语法 + 全量测试 + 文档版本/工具清单 + 生产库只读体检）；`--offline` 跳过需要 @deepseek-ai 私有 peer 包的套件。
 - **前端构建**：改动 `client/*.jsx` 后执行 `node build-client.mjs` 重建 `lib/client.js`（bundle 勿手改）。
 - **数据安全**：记忆库默认 `~/.dsh/memory.db`（WAL，可能在运行时生成 `.db-wal/.db-shm/.bak-*`）。任何数据库、凭据、备份文件**绝不入版本库**（见 `.gitignore`）。
-- **文档纪律**：禁止在文档/代码中出现本地绝对路径、真实凭据或密钥。
+- **文档纪律**：禁止在文档/代码中出现本地绝对路径、真实凭据或密钥；`tools/check.mjs` 会扫描文档里的本机路径。
+- **发布前**：改了 `client/*.jsx` 先 `node build-client.mjs`；改了数据结构先跑对应迁移脚本的 `--dry-run`；版本号、CHANGELOG、架构文档的版本标注放同一条提交。
 - **部署**：先确认**跑的是哪一份**再动手（形态不同，动作不同）。profile 的 `node_modules/dsh-memory` 若是 Junction/符号链接（`Get-Item … | Select LinkType,Target` 可查），改仓库即改线上代码，**只需重启实例**；若是真实目录副本，用 `node tools/deploy.mjs`（自动复验 md5；`--check` 只比对，有漂移退出码 1），重启生效，客户端改动刷新页面即可。
-  ⚠️ `deploy.mjs` 的目标写死为默认家目录下的 `~/.dsh/profiles/<profile>/node_modules/dsh-memory`——**DSH_HOME 不在默认位置时它认不出真正在跑的实例**（2026-10-06 实测：`DSH_HOME` 指向别处的实例走 Junction，而脚本默认指向另一份停在旧版本的副本）。先按端口查进程命令行确认 DSH_HOME 与 profile。
+  ⚠️ `deploy.mjs` 默认取 `DSH_HOME`（未设置时回落 `~/.dsh`）；两者不一致时它会检查错误的副本。先按端口查进程命令行确认 DSH_HOME 与 profile。
   2026-09-17 实测漂移一次：部署副本落后到缺 v0.9.31 降级护栏，代价是向量表被 rule 兜底迁移成 256 维、向量路停摆。**真正的副本形态**下收工前务必 `--check`。
 
 <!-- gitnexus:start -->
