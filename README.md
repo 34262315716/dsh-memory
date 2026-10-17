@@ -77,9 +77,9 @@ DSH 运行时 ──session/event──▶ 写入侧 ──沉淀/去重──�
 
 📄 交互式架构图：**[`docs/architecture.html`](docs/architecture.html)**（浏览器打开，或 DSH 右侧预览面板直接渲染）
 
-📚 架构文档（**v0.19.0，按主题分 11 章**）：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（总入口）→ [`docs/architecture/`](docs/architecture/README.md)（模块构造 / 数据模型 / 写入 / 检索 / 注入 / 图谱 / 遗忘与管家 / 配置与双内核 / 集成与工具面 / 工程约定 / 已知限制）· 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md) · 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
+📚 架构文档（**v0.20.0，按主题分 11 章**）：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（总入口）→ [`docs/architecture/`](docs/architecture/README.md)（模块构造 / 数据模型 / 写入 / 检索 / 注入 / 图谱 / 遗忘与管家 / 配置与双内核 / 集成与工具面 / 工程约定 / 已知限制）· 开发历程：[`docs/CHANGELOG.md`](docs/CHANGELOG.md) · 原始设计方案（1406 行）：[`docs/memory-plugin-proposal.md`](docs/memory-plugin-proposal.md) · 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-### 模块结构（v0.19.0）
+### 模块结构（v0.20.0）
 
 ```
 lib/index.js           装配壳：settings/init/Web API/管线/工具/ctx.memory（253 行）

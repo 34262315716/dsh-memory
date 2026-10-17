@@ -1,0 +1,126 @@
+{
+  "batch": 1,
+  "cluster": "记忆库设计 / dsh-memory scope",
+  "sourceCount": 56,
+  "mergedCount": 10,
+  "merged": [
+    {
+      "content": "记忆写入的完整判据（2026-10 定稿）：① 这条内容下次能提供有效的指导吗——只是记录发生过的事就不写；② 现场（代码/文件/配置）读得到吗——读得到就不写；③ 换个项目还用得上吗——用得上归 global，否则归项目 scope。事实可以写，前提是重要到能指导下一次判断：不记「下载了 Qwen3-32B」，记「本机 8GB 显存靠量化 + offload 能跑 20B 级模型」。三类内容值得写：偏好与边界、坑的根因与判据、被推翻的旧结论、换场景仍成立的方法、重要环境事实。特殊案例本身不值得记，要记的是从中抽出的规律，以及规律失效的那一次边界案例。",
+      "type": "lesson",
+      "abstract": "principle",
+      "theme": "记忆/写入判据"
+    },
+    {
+      "content": "dsh-memory 提取链路的四类故障与修法（2026-09 ~ 10 实测）：① 提取瘫痪 7 天的真因是调 ctx.llm.stream 时没传 sessionId——opencode 路由要求 x-opencode-session 头，缺失时上游返回 400，而适配器把它编码进 finish 块不抛异常，表现为「模型没输出正文」。② 强制思考模型（deepseek-v4.1-flash）的 reasoning token 也计入 max_tokens，设 800 会让思考吃光额度、正文为空 → 不设上限（maxTokens=0 即不传）+ 时间预算 + 续跑。③ 降级产物（「任务:…结果:…」式）说明走了规则路径，修复顺序应是先查 write.fallback 降级率修稳定性，再调提示词，最后做合并。④ 提示词有 10000 字硬上限（v0.13.3 防思考膨胀），加规则必须等量替换，加完跑 test-refiner-slim 验长度。社区案例佐证（mem0 issue）：某用户上线 32 天审计 10134 条记忆，97.8% 是垃圾，修法是收紧提取提示词 + 给不该存的东西加明确负面例子。",
+      "type": "lesson",
+      "abstract": "principle",
+      "theme": "记忆/提取故障"
+    },
+    {
+      "content": "探针与测试的同构纪律（dsh-memory 反复踩坑）：① 自检/探针必须与被检验的真实路径同构，否则会稳定误报——曾因 health 探针硬编码 maxTokens:32，对思考型模型必然正文为空，自检永远报「提取模型不可用」。② 探针不能测自己的缓存：写死输入的探针第二次起命中 LRU，恒报 0ms「健康」；修法是改用随机串 + 连打多次看分数是否变化。③ mock 不得伪造内核不存在的属性——test-inject-pipeline 曾伪造 agent.session = {events:[...]}，内核其实没有该属性（真源是 log + snapshotEvents()），于是测试全绿而线上每次注入都被守卫跳过。④ 测试断言不要写死数量（如工具名数组），改用从源码提取与实际注册对比，使测试自动跟随新增。",
+      "type": "lesson",
+      "abstract": "principle",
+      "theme": "工程/探针同构"
+    },
+    {
+      "content": "记忆库运维的四条硬规矩（dsh-memory 实测）：① 直连生产库的脚本必须复用插件的构造路径，否则可能绕过 degraded 护栏、用错嵌入维度（4096 vs 256 兜底），把向量表误迁成空表。② 用脚本绕过插件改正文时，store 没注入 embedder 会走 ruleEmbed 造兜底向量并成功写入，`vecRows == 总行数` 是假指标，而 reembedMissing 只补「向量行不存在」的条目、永远修不了它 → 改完必须 DELETE 该行向量，收尾跑 memory_reembed 用真嵌入重算。③ 读写记忆库的测试程序必须连副本库：曾有两个测试进程抢 SQLite 写锁，WAL 涨到 105MB。④ 验证数据库干扰是否造成实害以完整性检查为准（integrity_check、外键、悬空引用、条数增减），不能凭「日志里实例还在写」下结论。真库路径是 .dsh/memory.db（profile 里 dbFile 显式写死），不是默认家目录那份。",
+      "type": "lesson",
+      "abstract": "principle",
+      "theme": "记忆/库运维"
+    },
+    {
+      "content": "记忆检索的三条实测事实（dsh-memory）：① memory_search 只查「当前工作区 scope + global」两档，在项目 A 搜不到项目 B 的记忆是设计如此，不是索引坏——排查先查目标 scope，再用同作用域的词验 FTS（trigram 要求 ≥3 字符）。② 中文 FTS 分支实际从未生效：tokenize 只产出 2 字 bigram，而 ftsTerms 过滤掉 length<3 的词，中文 query 永远进不了 FTS5，BM25 那一路对中文等于空跑。③ 检索热路径每次 SELECT * 全表再在 JS 里 parse keywords，2542 条规模约 20ms/次且每轮至少一次 → 关键词路下推 SQL、向量命中批量 IN、热语句预编译。",
+      "type": "lesson",
+      "abstract": "principle",
+      "theme": "记忆/检索"
+    },
+    {
+      "content": "dsh-memory 注入机制的两个关键事实：① 不能用 agent.inject()——它把记忆块放入 next-step 队列，导致 turnEnds 后循环不结束、模型被迫再答一轮；正确做法是通过 next() 拿到 decision 后把记忆块合并进本步 messages。② 珍贵的教训类记忆必须恒定注入（常驻要点 pin），不能等到对话内容相关才被检索到——这条诉求催生了 pinned 机制，pin 的条目不受相关性与节流影响。",
+      "type": "decision",
+      "abstract": "principle",
+      "theme": "记忆/注入"
+    },
+    {
+      "content": "决策模型（StartLux-Decision 9B）的定位与最终结论：只放在「昂贵且不可逆」的环节——写入侧那次 LLM 提取一轮几十秒、判错就少记一条，值得加判断；查库是注入链路的本职工作且可重做，不配一道判断门（2026-10-06 主人判定，注入侧决策门已整块拆除）。可迁移判据：一个「优化开关」若依赖一个默认不常驻的外部服务，就不该默认开着——收益是不确定的「省一次 LLM」，代价却是每轮必然发生的一次失败往返（writeGate 实测 496 次调用成功 0 次，伴随 warn 刷屏）。主人 2026-10-14 最终态度：保持默认关，开关与门槛保留不删。",
+      "type": "decision",
+      "abstract": "principle",
+      "theme": "记忆/决策模型"
+    },
+    {
+      "content": "dsh-memory 的两条方向性决策（2026-08-18 定，长期有效）：① 注入时机与内容策略由软件工程（显式代码规则）实现，不走训练驱动的「记忆技能」路线（MemSkill / meta-memory 那类需 RL 训 controller）——理由是无法训练模型、当前 LLM 也无法从少数样本习得「何时记/何时用」的方法性知识。② 融合开源架构时抄设计不抄实现：看 LICENSE、按自身缺口选择性借鉴。Graphiti 与 Mem0 值得参考（边有效性窗口、记忆溯源、增量更新、混合检索），mem0 的真删除做法不可学。",
+      "type": "decision",
+      "abstract": "principle",
+      "theme": "记忆/方向决策"
+    },
+    {
+      "content": "版本号与提交卫生：dsh-memory 仓库的 package.json version 曾长期停在 0.16.2，而后续提交只在标题里写版本号、未同步文件，导致版本号与提交标题错位（曾把写入侧改动误标为 v0.17.0，与「主题合并」撞号）。可迁移判据：改版本号前必须先读 package.json 实际值再对齐；版本号、CHANGELOG、文档标注应由脚本检查一致性。",
+      "type": "lesson",
+      "abstract": "principle",
+      "theme": "工程/版本卫生"
+    },
+    {
+      "content": "记忆库冗余的真实成因（2026-10-17 诊断，748 条未归档 / 1840 已归档）：内容重复不是主因——关键词相似度 ≥0.6 的仅 4 对 8 条，前 40 字完全相同的 0 组。主要累赘是 420 条 strength 已触底（≤0.11，写入后从未被检索）与 472 条主题标签为空（占 63%，图谱散点化、无法按主题聚类）。累赘感不来自分层，而来自「写入后从未被检索」：衰减率 0.15/天，15 天未访问即触底，而每周仍新增 200~460 条。",
+      "type": "note",
+      "abstract": "principle",
+      "theme": "记忆/冗余诊断"
+    }
+  ],
+  "sourceIds": [
+    "mem-9c6361ba",
+    "mem-e9bee311",
+    "mem-d3e7e74e",
+    "mem-018b2400",
+    "mem-c1900896",
+    "mem-9b1ab685",
+    "mem-a4143303",
+    "mem-1b4267ae",
+    "mem-76ce5448",
+    "mem-e71a5e57",
+    "mem-4383d953",
+    "mem-7195c984",
+    "mem-87e18393",
+    "mem-8926e9ec",
+    "mem-8ebbc0b9",
+    "mem-81376099",
+    "mem-5125a782",
+    "mem-85c8110d",
+    "mem-1c2662fc",
+    "mem-f170a3fa",
+    "mem-df9cafe4",
+    "mem-5f86c8e1",
+    "mem-0b792fe1",
+    "mem-fa55091b",
+    "mem-30501ffd",
+    "mem-5a3a2662",
+    "mem-13909029",
+    "mem-4fac5592",
+    "mem-709a5734",
+    "mem-77a30adf",
+    "mem-06196a96",
+    "mem-0a2cd97b",
+    "mem-4ad8d7bb",
+    "mem-20e5ce87",
+    "mem-943371e9",
+    "mem-38acb364",
+    "mem-a3920cd5",
+    "mem-32f6daa3",
+    "mem-80f70fae",
+    "mem-5ca1fb56",
+    "mem-a71b3818",
+    "mem-624c2edc",
+    "mem-58386447",
+    "mem-47684b37",
+    "mem-4dc785a1",
+    "mem-cecbd66d",
+    "mem-44b6080a",
+    "mem-f531a2e0",
+    "mem-8ee98ca4",
+    "mem-5ca5d642",
+    "mem-c526cf87",
+    "mem-7789c1ec",
+    "mem-4090417e",
+    "mem-130188df",
+    "mem-e868cc38",
+    "mem-836644e8"
+  ]
+}
