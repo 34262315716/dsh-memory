@@ -62,6 +62,7 @@ memory_theme_relabel     存量主题治理（簇级 LLM 重命名；dryRun 只�
 memory_events            列出记忆事件（时间+因果聚簇；detect=true 强制重检测）
 memory_profile_distill   画像蒸馏（偏好/决策聚合为用户画像；需 refiner 启用）
 memory_logs               查看运行日志（写入/注入/检索/巡检/蒸馏/错误全透明）
+memory_batch_status       批量提取状态（候选池攒了多少、哪些桶快够门槛、最近归纳了什么）
 system_now               获取当前系统时间（本地 + ISO + Unix + 星期 + 时区）
 ```
 
