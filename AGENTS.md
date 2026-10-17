@@ -13,6 +13,14 @@ DSH（DeepSeek Harness）进阶自动记忆插件：分层记忆（情景/语义
   ⚠️ `deploy.mjs` 默认取 `DSH_HOME`（未设置时回落 `~/.dsh`）；两者不一致时它会检查错误的副本。先按端口查进程命令行确认 DSH_HOME 与 profile。
   2026-09-17 实测漂移一次：部署副本落后到缺 v0.9.31 降级护栏，代价是向量表被 rule 兜底迁移成 256 维、向量路停摆。**真正的副本形态**下收工前务必 `--check`。
 
+## 环境与工具坑（实测，别重复踩）
+
+- **符号链接会随 .dsh-runtime 升级断裂**：`node_modules/@deepseek-ai/*` 是指向 `.dsh-runtime/dsh/node_modules/.pnpm/...` 的软链，升级后 pnpm 目录哈希变了、链接仍指旧路径。表现为 `tools/check.mjs` 里一批测试套件加载失败（`ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-tools`）。**先查链接，不要据此排查业务代码**。修法：按新哈希目录逐个重建（`ls -d .pnpm/@deepseek-ai+dsh-agent-inst_*` 找到真实路径再 `ln -s`），或重跑 `pnpm install`。
+- **`defineTool` 的 schema 比看起来严**：① `required: false` 不被允许——要么省略该字段、要么写 `true`；② array 的 `items` 若是 object，必须显式写 `additionalProperties: false` 与完整 `properties` 表，否则 `compileValueSchema` 抛 `JsonSchemaError`。
+- **工具注册失败是静默的**：`safeRegister` 会吞掉异常并打一行 warn。表现为「工具没注册上但没有任何报错」，只有对照 `test-crash-safety.mjs` 的「源码提取名 vs 实际注册名」断言才看得出来。加新工具后**必跑那套测试**。
+- **CRLF 混用会吃掉 replace**：仓库部分文件是 CRLF，用字符串 replace 时若匹配串没带 `\r`，会静默不命中（返回值看着像成功）。改这类文件优先用行号操作，或先 `split('\n')` 再处理。
+- **会话累积必须落盘**：批量提取的静置计时器活在内存里，进程重启就没了。`lib/session-persist.js` 把它存在 meta 表的 `batch:turns:<sid>`；改动这块时别把落盘/读回拆掉，否则「2 小时内重启过一次 = 那段会话永远不提取」。
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
