@@ -278,7 +278,8 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       return (h % 1000) / 1000
     }
     const transform = { x: 0, y: 0, k: 1 }
-    const heat = (a) => { alpha = Math.max(alpha, a) }
+    // v0.19.0：删除 heat()。真循环每帧把 alpha 地板压在 0.4，heat(0.35) 永远不生效
+    // （旧注释里"松手冷却"的行为实际不存在）。
     /** fixedAlpha 传入时用**固定** alpha（预热求真实平衡用）；否则按原衰减律 + 活跃度地板。 */
     const step = (fixedAlpha) => {
       if (typeof fixedAlpha === "number") alpha = fixedAlpha
@@ -924,9 +925,7 @@ const ObsidianGraph = memo(function ObsidianGraph({ data, onSelect, selectedRef,
       moved = false
       const [mx, my] = getPos(ev)
       const n = hitTest(mx, my)
-      // 抓住的瞬间"升温"到 0.35：整张图醒过来、弹簧开始牵引；松手后 alpha 自然衰减冷却，
-      // 于是能看到一次回弹后的收敛（弹簧感的一部分）。
-      if (n) { dragNode = n; dragPrev.x = n.x; dragPrev.y = n.y; heat(0.35); if (!raf) raf = requestAnimationFrame(loop) }
+      if (n) { dragNode = n; dragPrev.x = n.x; dragPrev.y = n.y; if (!raf) raf = requestAnimationFrame(loop) }
       else panStart = { x: ev.clientX, y: ev.clientY, tx: transform.x, ty: transform.y }
     }
     const onMove = (ev) => {
@@ -1138,7 +1137,8 @@ function MemoryGraphView({ scope }) {
     // field / spacing / attract / maxSpeed / wobble / range 用 isFinite 而不是 `||`：
     // **0 是合法值**（关掉某项），用 `||` 会把用户填的 0 悄悄换成默认值——"设了没反应"最容易被当成 bug。
     field: Number.isFinite(Number(gv.field)) ? Number(gv.field) : 1,
-    spacing: (() => { const v = Number(gv.spacing); return Number.isFinite(v) && v > 0 ? v : 1.6 })(),
+    // v0.19.0：兜底与 FIELD_DEFAULTS.spacing（1.2）一致——此前这里写 1.6，首次打开比出厂更密
+    spacing: (() => { const v = Number(gv.spacing); return Number.isFinite(v) && v > 0 ? v : 1.2 })(),
     attract: Number.isFinite(Number(gv.attract)) ? Number(gv.attract) : 0.06,
     maxSpeed: (() => { const v = Number(gv.maxSpeed); return Number.isFinite(v) && v > 0 ? v : 4 })(),
     wobble: Number.isFinite(Number(gv.wobble)) ? Number(gv.wobble) : 0.04,

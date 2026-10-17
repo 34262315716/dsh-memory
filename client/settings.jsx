@@ -548,7 +548,20 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
     return isNumeric && Number.isNaN(Number(v))
   })
 
+  // v0.19.0：rc2 的 set/unset 返回 Promise<boolean>（老版是 void）。宿主拒绝
+  //（例如超出 schema 范围）时把字段收集起来，保存提示不再无条件报成功。
+  const failedFields = []
+  const setField = async (key, value) => {
+    const ok = await scope.set(key, value)
+    if (ok === false) failedFields.push(key)
+  }
+  const unsetField = async (key) => {
+    const ok = await scope.unset(key)
+    if (ok === false) failedFields.push(key)
+  }
+
   const save = async () => {
+    failedFields.length = 0
     setSaving(true)
     setMsg('')
     try {
@@ -556,28 +569,28 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
       for (const [field] of NUMBER_FIELDS) {
         const raw = drafts[field]
         if (raw === undefined) continue
-        if (raw === '') await scope.unset(field)
-        else await scope.set(field, Number(raw))
+        if (raw === '') await unsetField(field)
+        else await setField(field, Number(raw))
       }
-      if (drafts['enabled'] !== undefined) await scope.set('enabled', drafts['enabled'])
+      if (drafts['enabled'] !== undefined) await setField('enabled', drafts['enabled'])
       if (drafts['dbFile'] !== undefined) {
-        if (drafts['dbFile'] === '') await scope.unset('dbFile')
-        else await scope.set('dbFile', drafts['dbFile'])
+        if (drafts['dbFile'] === '') await unsetField('dbFile')
+        else await setField('dbFile', drafts['dbFile'])
       }
       if (drafts['scope'] !== undefined) {
-        if (drafts['scope'] === '') await scope.unset('scope')
-        else await scope.set('scope', drafts['scope'])
+        if (drafts['scope'] === '') await unsetField('scope')
+        else await setField('scope', drafts['scope'])
       }
       // 注入节奏档位（v0.11.2）：字符串枚举，live 生效
-      if (drafts['injectPace'] !== undefined) await scope.set('injectPace', drafts['injectPace'])
+      if (drafts['injectPace'] !== undefined) await setField('injectPace', drafts['injectPace'])
       // 常驻注入粒度（v0.18.0）：字符串枚举，live 生效
-      if (drafts['pinnedInjection'] !== undefined) await scope.set('pinnedInjection', drafts['pinnedInjection'])
+      if (drafts['pinnedInjection'] !== undefined) await setField('pinnedInjection', drafts['pinnedInjection'])
       // 常驻预算（v0.16.2 补界面入口）：顶层数值字段，走与 NUMBER_FIELDS 相同的空值语义
       for (const field of ['pinnedLimit', 'pinnedMaxTokens']) {
         const raw = drafts[field]
         if (raw === undefined) continue
-        if (raw === '') await scope.unset(field)
-        else await scope.set(field, Number(raw))
+        if (raw === '') await unsetField(field)
+        else await setField(field, Number(raw))
       }
       // features 整体
       const featKeys = FEATURE_FIELDS.map(([f]) => f).concat(['preheatRoute', 'webFence'])
@@ -590,7 +603,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         // 两个字符串枚举（v0.16.2 补界面入口）：不走 FEATURE_FIELDS 的布尔分支
         if (drafts['features.preheatRoute'] !== undefined) next.preheatRoute = String(drafts['features.preheatRoute'])
         if (drafts['features.webFence'] !== undefined) next.webFence = String(drafts['features.webFence'])
-        await scope.set('features', next)
+        await setField('features', next)
       }
       {/* refiner 整体 */}
       const refKeys = REFINER_FIELDS.map(([f]) => f).concat(['dialogChars', 'knownChars', 'knownTopN', 'messagesProviders'])
@@ -612,7 +625,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           // 逗号分隔文本 → 字符串数组；空串 = 清空名单（回到 pi-ai 姿势，这是有意义的取值）
           next.messagesProviders = String(mp).split(',').map((s) => s.trim()).filter(Boolean)
         }
-        await scope.set('refiner', next)
+        await setField('refiner', next)
       }
       {/* decision 整体（v0.16.0 决策门） */}
       const decKeys = DECISION_FIELDS.map(([f]) => f)
@@ -622,7 +635,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           const v = drafts[`decision.${f}`]
           if (v !== undefined) next[f] = NUMERIC_SUB.has(f) ? Number(v) : String(v)
         }
-        await scope.set('decision', next)
+        await setField('decision', next)
       }
       {/* embedding 整体 */}
       const embKeys = EMBEDDING_FIELDS.map(([f]) => f)
@@ -632,7 +645,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           const v = drafts[`embedding.${f}`]
           if (v !== undefined) next[f] = NUMERIC_SUB.has(f) ? Number(v) : String(v)
         }
-        await scope.set('embedding', next)
+        await setField('embedding', next)
       }
       {/* reranker 整体 */}
       const rkKeys = RERANKER_FIELDS.map(([f]) => f)
@@ -643,7 +656,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           if (v !== undefined) next[f] = NUMERIC_SUB.has(f) ? Number(v) : String(v)
         }
         if (drafts['reranker.enabled'] !== undefined) next.enabled = drafts['reranker.enabled']
-        await scope.set('reranker', next)
+        await setField('reranker', next)
       }
       {/* graphView 整体 */}
       const gvKeys = GRAPH_VIEW_FIELDS.map(([f]) => f)
@@ -656,7 +669,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         // themeShape/themeScope 是字符串枚举（hull|circle / focus|always|off）——不走 NUMERIC_SUB 的 Number 分支
         if (drafts['graphView.themeShape'] !== undefined) next.themeShape = String(drafts['graphView.themeShape'])
         if (drafts['graphView.themeScope'] !== undefined) next.themeScope = String(drafts['graphView.themeScope'])
-        await scope.set('graphView', next)
+        await setField('graphView', next)
       }
       {/* housekeeping 整体 */}
       const hkKeys = HOUSEKEEPING_FIELDS.map(([f]) => f)
@@ -668,14 +681,14 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
         }
         if (drafts['housekeeping.enabled'] !== undefined) next.enabled = drafts['housekeeping.enabled']
         if (drafts['housekeeping.autoApply'] !== undefined) next.autoApply = drafts['housekeeping.autoApply']
-        await scope.set('housekeeping', next)
+        await setField('housekeeping', next)
       }
       {/* sessionSummary 整体（v0.12.2 会话级汇总） */}
       if (drafts['sessionSummary.enabled'] !== undefined || drafts['sessionSummary.rounds'] !== undefined) {
         const next = { ...(sessionSummary ?? {}) }
         if (drafts['sessionSummary.enabled'] !== undefined) next.enabled = drafts['sessionSummary.enabled']
         if (drafts['sessionSummary.rounds'] !== undefined) next.rounds = Number(drafts['sessionSummary.rounds'])
-        await scope.set('sessionSummary', next)
+        await setField('sessionSummary', next)
       }
       {/* events 整体（v0.9.0 事件分类） */}
       const evKeys = EVENTS_FIELDS.map(([f]) => f)
@@ -686,7 +699,7 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           if (v !== undefined) next[f] = Number(v)
         }
         if (drafts['events.enabled'] !== undefined) next.enabled = drafts['events.enabled']
-        await scope.set('events', next)
+        await setField('events', next)
       }
       {/* logging 整体（v0.9.5 运行日志） */}
       const lgKeys = LOGGING_FIELDS.map(([f]) => f)
@@ -697,11 +710,15 @@ function MemorySettingsSectionInner({ scope, api, llmScope, deepseekScope }) {
           if (v !== undefined) next[f] = Number(v)
         }
         if (drafts['logging.enabled'] !== undefined) next.enabled = drafts['logging.enabled']
-        await scope.set('logging', next)
+        await setField('logging', next)
       }
       setDrafts({})
       setEmbedAck(false)
-      setMsg('✅ 已保存' + (embChanging ? '；嵌入模型改动需重启 DSH 生效' : '') + '；其余标注「需重启」的字段重启后生效，未标注的即时生效（live）')
+      if (failedFields.length > 0) {
+        setMsg(`⚠️ 部分字段未生效：${failedFields.join('、')}（可能超出允许范围）。其余字段已保存。`)
+      } else {
+        setMsg('✅ 已保存' + (embChanging ? '；嵌入模型改动需重启 DSH 生效' : '') + '；其余标注「需重启」的字段重启后生效，未标注的即时生效（live）')
+      }
     } catch (err) {
       setMsg(`❌ 保存失败: ${err.message}`)
     } finally {

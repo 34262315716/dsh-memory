@@ -34,8 +34,11 @@ console.log('== 1. 主题聚类增量：先全量归簇，后续只处理新增�
   const cc = store.db.prepare('SELECT cluster_id, theme FROM memories WHERE id = ?').get(c)
   const nClusters2 = store.db.prepare('SELECT COUNT(*) AS c FROM theme_clusters').get().c
   check('增量：已有记忆簇不变（cluster_id 稳定）', ca2.cluster_id === caId)
-  check('增量：新记忆新簇（不与旧簇混淆）', cc.cluster_id !== '' && cc.cluster_id !== caId)
-  check('增量：簇数恰 +1', nClusters2 === nClusters1 + 1)
+  check('增量：新记忆不与旧簇混淆', cc.cluster_id !== '' && cc.cluster_id !== caId)
+  // v0.19.0：单点记忆不再建簇（避免每条一个新簇 + 86KB 质心 + 空标签覆盖 theme）。
+  // 未成簇的记忆标 'solo'，等同一批/后续出现相似记忆再成簇。
+  check('增量：单点记忆标 solo、不建碎片簇', cc.cluster_id === 'solo' && nClusters2 === nClusters1)
+  check('增量：没有空标签簇', store.db.prepare("SELECT COUNT(*) AS c FROM theme_clusters WHERE label = ''").get().c === 0)
   // 旧簇词频不受影响：a 的 theme 保持
   check('增量：旧簇标签不回退', store.db.prepare('SELECT theme FROM memories WHERE id = ?').get(a).theme === ca.theme)
 

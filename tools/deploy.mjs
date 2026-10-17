@@ -29,7 +29,11 @@ if (!profile) {
 }
 
 const srcRoot = join(root, 'lib')
-const dstPkgRoot = join(homedir(), '.dsh', 'profiles', profile, 'node_modules', 'dsh-memory')
+// v0.19.0：优先认 DSH_HOME。此前固定拼 ~/.dsh，认不出 DSH_HOME 在别处的实例
+//（本机真正在跑的 web-2 在 D:\Aitool\DSH-all\.dsh，脚本却去检查桌面 app 的旧副本）。
+const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+const dstPkgRoot = join(dshHome, 'profiles', profile, 'node_modules', 'dsh-memory')
+console.log(`[deploy] DSH_HOME=${dshHome}（用 --profile 指定 profile）`)
 const dstRoot = join(dstPkgRoot, 'lib')
 
 if (!existsSync(dstPkgRoot)) {

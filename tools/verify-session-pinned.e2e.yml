@@ -18,7 +18,9 @@
     - id: workspace
       name: '@deepseek-ai/dsh-workspace'
     - id: memory
-      name: 'D:/AItool/DSH-all/work-konjian/dsh-memory/lib/index.js'
+      # 手工 overlay：把 __REPO__ 换成仓库绝对路径后再加载（v0.19.0 去掉写死的本机路径）。
+      # 放在 tools/ 下不会被 GitHub Actions 自动执行，属于排障样本。
+      name: '__REPO__/lib/index.js'
       config:
         dbFile: __DBFILE__
         injectPace: custom

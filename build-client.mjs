@@ -6,7 +6,7 @@
  */
 import { writeFileSync } from 'node:fs'
 // esbuild 优先从依赖解析（开源/CI 走 devDependencies）。
-// 作者本机曾经硬编码一条 file:///D:/AItool/... 的绝对路径兜底——那违反本文档纪律
+// 作者本机曾经硬编码一条 file:///... 的绝对路径兜底——那违反本文档纪律
 // （禁止本机绝对路径入库），而且换机器就断。改成显式环境变量：谁的本机谁自己指。
 let build
 try {
@@ -34,6 +34,8 @@ const result = await build({
   jsxImportSource: 'react',
   external: ['@deepseek-ai/*', 'react', 'react-dom', 'react/jsx-runtime'],
   write: false,
+  // v0.19.0：开 minify。未压缩 187KB / gzip 46KB → 112KB / 36KB（实测）。
+  minify: true,
   logLevel: 'warning',
 })
 

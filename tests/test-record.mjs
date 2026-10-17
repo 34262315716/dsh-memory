@@ -39,8 +39,11 @@ if (!embedder) { embedder = new RuleEmbedder(256); note('使用 rule 哈希嵌�
 // 2. 打开库（--live 用生产库只读检索；默认临时库）
 let store, dir = null
 if (live) {
-  store = new MemoryStore(join(homedir(), '.dsh', 'memory.db'), { time: true, maxVersions: 8, embedder })
-  console.log('\n== 生产库自检（只读检索，不写入） ==')
+  // v0.19.0：只读打开。MemoryStore 构造会执行 SCHEMA / 补列 / PRAGMA（写 WAL），
+  // 与「只读检索，不写入」的注释不符。
+  const { DatabaseSync } = await import('node:sqlite')
+  store = new DatabaseSync(join(homedir(), '.dsh', 'memory.db'), { readOnly: true })
+  console.log('\n== 生产库自检（只读，不写入） ==')
 } else {
   dir = mkdtempSync(join(tmpdir(), 'dsh-memory-record-'))
   store = new MemoryStore(join(dir, 'record.db'), { time: true, maxVersions: 8, embedder })

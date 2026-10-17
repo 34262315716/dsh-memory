@@ -20,11 +20,14 @@ jobs:
       - name: 安装依赖（跳过 DSH 私有 peer 依赖）
         run: npm ci --omit=peer
       - name: 跑离线套件
+        # v0.19.0：套件在 tests/ 下（此前命令指向仓库根的 test.mjs，CI 从未真正跑过）。
+        # 这里只列不依赖 @deepseek-ai 私有包的套件；test.mjs / test-inject-pipeline /
+        # test-profile / test-tool-add 等需要 peer 依赖，在本机或部署副本里跑。
         run: |
-          for t in test test-phase2 test-phase3 test-events test-housekeeping \
+          for t in test-phase2 test-phase3 test-events test-housekeeping \
                    test-incremental test-update-append test-edge-types test-keyword-filter; do
             echo "== $t =="
-            node "$t.mjs" || exit 1
+            node "tests/$t.mjs" || exit 1
           done
       - name: 构建 client bundle（验证 client 可打包）
         run: node build-client.mjs
